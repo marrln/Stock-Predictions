@@ -22,14 +22,13 @@ Stock_price/
 │   ├── AA.csv
 │   └── ...
 ```
-4. After downloading and unzipping the dataset, run the preprocessing script to only keep data from 2018 to 2023 and only keep stocks that have samples for all these years.
+4. After downloading and unzipping the dataset, run the preprocessing script to only keep data from 2018 to 2023 and only keep stocks that have samples for all these years. Note that this step may take a while due to the size of the dataset.
 ```bash
 python crop_fnspid.py
 ```
 Now the structure should look like this:
 ```
 data_stats/
-├── news_stats.json
 ├── price_stats.json
 Stock_news/
 ├── nasdaq_external_data.csv (deletable)
