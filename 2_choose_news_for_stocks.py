@@ -27,7 +27,7 @@ def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_js
     first_chunk = True
     chunk_idx = 0
     # Determine columns to read (all except drop_cols)
-    drop_cols = ['Unnamed: 0', 'Url', 'Author', 'Publisher', 'Lsa_summary', 'Textrank_summary', 'Lexrank_summary'] 
+    drop_cols = ['Unnamed: 0', 'Url', 'Author', 'Publisher', 'Lsa_summary', 'Textrank_summary', 'Lexrank_summary', 'Lunh_summary'] 
     all_cols = pd.read_csv(news_csv, nrows=0).columns.tolist()
     for chunk in pd.read_csv(news_csv, usecols=[c for c in all_cols if c not in drop_cols], chunksize=50_000):
         try:
