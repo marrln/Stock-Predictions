@@ -106,3 +106,22 @@ def calc_csv_stats(price_stats, stocks_price_dir, year_start, year_end):
 if __name__ == "__main__":
     select_stocks_in_range(STOCKS_CSV, STOCKS_PRICE_DIR, YEAR_START, YEAR_END)
     calc_csv_stats(PRICE_STATS, STOCKS_PRICE_DIR, YEAR_START, YEAR_END)
+    
+    for fname in os.listdir(STOCKS_PRICE_DIR):
+        if fname.endswith('.csv'):
+            file_path = os.path.join(STOCKS_PRICE_DIR, fname)
+            try:
+                df = pd.read_csv(file_path)
+                # Round price columns to 4 decimals, volume to int
+                price_cols = ['open', 'high', 'low', 'close', 'adj close']
+                for col in price_cols:
+                    if col in df.columns:
+                        df[col] = df[col].round(4)
+                if 'volume' in df.columns:
+                    df['volume'] = df['volume'].round().astype('Int64')
+                # Sort by date ascending
+                if 'date' in df.columns:
+                    df = df.sort_values('date')
+                df.to_csv(file_path, index=False)
+            except Exception as e:
+                print(f"[ERROR] Could not process {fname}: {e}")
