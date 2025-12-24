@@ -32,33 +32,54 @@ def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_js
     usecols = [c for c in all_cols if c not in drop_cols]
 
     for chunk in pd.read_csv(news_csv, usecols=usecols, chunksize=50000, low_memory=False):
-        chunk_idx += 1
-        print(f"[INFO] Processing chunk {chunk_idx}/{total_chunks}", end='\r')
+        try:
+            chunk_idx += 1
+            print(f"[INFO] Processing chunk {chunk_idx}/{total_chunks}", flush=True)
 
-        chunk = chunk[chunk['Stock_symbol'].isin(tickers)]
-        
-        if chunk.empty:
-            continue
-        chunk['Date'] = pd.to_datetime(chunk['Date'], errors='coerce')
-        chunk = chunk[(chunk['Date'].dt.year >= year_start) & (chunk['Date'].dt.year <= year_end)]
-        
-        if chunk.empty:
-            continue
-        
-        chunk.to_csv(filtered_news_csv, index=False, mode='a', header=first_chunk)
-        first_chunk = False
-        # Efficiently update stats using value_counts
-        chunk['year'] = chunk['Date'].dt.year
-        counts = chunk.value_counts(['Stock_symbol', 'year'])
-        for (symbol, year), count in counts.items():
-            if symbol not in news_stats:
-                news_stats[symbol] = {}
-            news_stats[symbol][str(year)] = news_stats[symbol].get(str(year), 0) + int(count)
-        # Save stats every 10 chunks
-        if chunk_idx % 10 == 0:
-            with open(news_stats_json, 'w') as f:
-                json.dump(news_stats, f, indent=4)
-    # Final save
+            # Drop rows with missing Article
+            before = len(chunk)
+            chunk = chunk.dropna(subset=['Article'])
+            after = len(chunk)
+            if before != after:
+                print(f"[CLEAN] Dropped {before - after} rows with missing Article in chunk {chunk_idx}", flush=True)
+
+            if chunk.empty:
+                print(f"[INFO] Chunk {chunk_idx} is empty after Article drop.", flush=True)
+                continue
+            
+            chunk = chunk[chunk['Stock_symbol'].isin(tickers)]
+            if chunk.empty:
+                print(f"[INFO] Chunk {chunk_idx} is empty after ticker filter.", flush=True)
+                continue
+            
+            chunk['Date'] = pd.to_datetime(chunk['Date'], errors='coerce')
+            chunk = chunk[(chunk['Date'].dt.year >= year_start) & (chunk['Date'].dt.year <= year_end)]
+            if chunk.empty:
+                print(f"[INFO] Chunk {chunk_idx} is empty after date filter.", flush=True)
+                continue
+            chunk.to_csv(filtered_news_csv, index=False, mode='a', header=first_chunk)
+            first_chunk = False
+            # Efficiently update stats using value_counts
+            chunk['year'] = chunk['Date'].dt.year
+            counts = chunk.value_counts(['Stock_symbol', 'year'])
+            for (symbol, year), count in counts.items():
+                if symbol not in news_stats:
+                    news_stats[symbol] = {}
+                news_stats[symbol][str(year)] = news_stats[symbol].get(str(year), 0) + int(count)
+            # Save stats every 10 chunks
+            if chunk_idx % 10 == 0:
+                with open(news_stats_json, 'w') as f:
+                    json.dump(news_stats, f, indent=4)
+        except Exception as e:
+            print(f"[ERROR] Exception in chunk {chunk_idx}: {e}", flush=True)
+    # Ensure all stocks and all years are present in stats
+    all_years = [str(y) for y in range(year_start, year_end + 1)]
+    for ticker in tickers:
+        if ticker not in news_stats:
+            news_stats[ticker] = {}
+        for year in all_years:
+            if year not in news_stats[ticker]:
+                news_stats[ticker][year] = 0
     with open(news_stats_json, 'w') as f:
         json.dump(news_stats, f, indent=4)
     print(f"[INFO] Filtered news CSV saved to {filtered_news_csv}")
