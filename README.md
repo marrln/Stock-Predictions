@@ -52,7 +52,7 @@ Run `1_stock_select.py` to:
 
 **Step 2: Filter and clean news data**
 
-Run `2_choose_news_for_stocks.py` to:
+Run `2_choose_news_for_stocks.py` (this may take a while) to:
 	- Filter the news CSV to only keep articles for the valid tickers and within the date range 2018-2023
 	- Drop unnecessary columns
 	- Write the filtered news to `Stock_news/sp500_news.csv`
@@ -60,22 +60,22 @@ Run `2_choose_news_for_stocks.py` to:
 
 ```bash
 python 1_stock_select.py
-python 2_choose_news_for_stocks.py (this may take a while)
+python 2_choose_news_for_stocks.py 
 ```
 
 Now the structure should look like this:
 ```
-data_stats/
+data_stats/ (~1MB)
 ├── price_stats.json
 ├── news_stats.json
 ├── sp500.csv
 Stock_news/
-├── nasdaq_external_data.csv (deletable)
-├── sp500_news.csv (~8GB)
+├── nasdaq_external_data.csv (delete this to save space)
+├── sp500_news.csv (~3GB)
 Stock_price/
-├── full_history/ (~600MB)
+├── full_history/ (~52MB)
 │   ├── A.csv (2018-2023)
-│   ├── AA.csv
+│   ├── AAPL.csv
 │   └── ...
 ```
 
