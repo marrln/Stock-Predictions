@@ -30,10 +30,16 @@ def select_stocks_in_range(stocks_csv, stocks_price_dir, year_start, year_end):
             df = pd.read_csv(file_path, parse_dates=['date'])
             mask = (df['date'] >= f"{year_start}-01-01") & (df['date'] <= f"{year_end}-12-31")
             df = df.loc[mask, ['date','volume','open','high','low','close','adj close']]
-            # Delete file if empty after filtering
+            # Drop rows with NaNs in any main column
+            before_drop = len(df)
+            df = df.dropna(subset=['volume','open','high','low','close','adj close'])
+            dropped = before_drop - len(df)
+            if dropped > 0:
+                print(f"[CLEAN] Dropped {dropped} rows with NaNs in {fname}")
+            # Delete file if empty after filtering/cleaning
             if df.empty:
                 os.remove(file_path)
-                print(f"[INFO] Deleted empty file after date filtering: {fname}")
+                print(f"[INFO] Deleted empty file after filtering/cleaning: {fname}")
                 continue
             # Check for complete year coverage
             years_present = set(df['date'].dt.year.unique())
