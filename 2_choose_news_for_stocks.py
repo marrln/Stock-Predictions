@@ -20,21 +20,19 @@ for fname in os.listdir(PRICE_DIR):
 
 def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_json, year_start, year_end, tickers):
     os.makedirs(output_dir, exist_ok=True)
+    # Remove output file if it exists to avoid appending to old data
+    if os.path.exists(filtered_news_csv):
+        os.remove(filtered_news_csv)
     news_stats = {}
     first_chunk = True
-    total_rows = sum(1 for _ in open(news_csv)) - 1  # minus header
-    print(f"[INFO] Total rows in news CSV: {total_rows}")
-    total_chunks = (total_rows // 50000) + (1 if total_rows % 50000 else 0)
     chunk_idx = 0
     # Determine columns to read (all except drop_cols)
-    drop_cols = ['Unnamed: 0', 'Url', 'Author', 'Publisher']
+    drop_cols = ['Unnamed: 0', 'Url', 'Author', 'Publisher', 'Lsa_summary', 'Textrank_summary', 'Lexrank_summary'] 
     all_cols = pd.read_csv(news_csv, nrows=0).columns.tolist()
-    usecols = [c for c in all_cols if c not in drop_cols]
-
-    for chunk in pd.read_csv(news_csv, usecols=usecols, chunksize=50000, low_memory=False):
+    for chunk in pd.read_csv(news_csv, usecols=[c for c in all_cols if c not in drop_cols], chunksize=50_000):
         try:
             chunk_idx += 1
-            print(f"[INFO] Processing chunk {chunk_idx}/{total_chunks}", flush=True)
+            print(f"[INFO] Processing chunk {chunk_idx}/?", flush=True)
 
             # Drop rows with missing Article
             before = len(chunk)
@@ -54,11 +52,14 @@ def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_js
             
             chunk['Date'] = pd.to_datetime(chunk['Date'], errors='coerce')
             chunk = chunk[(chunk['Date'].dt.year >= year_start) & (chunk['Date'].dt.year <= year_end)]
+            
             if chunk.empty:
                 print(f"[INFO] Chunk {chunk_idx} is empty after date filter.", flush=True)
                 continue
+            
             chunk.to_csv(filtered_news_csv, index=False, mode='a', header=first_chunk)
             first_chunk = False
+            
             # Efficiently update stats using value_counts
             chunk['year'] = chunk['Date'].dt.year
             counts = chunk.value_counts(['Stock_symbol', 'year'])
@@ -66,12 +67,10 @@ def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_js
                 if symbol not in news_stats:
                     news_stats[symbol] = {}
                 news_stats[symbol][str(year)] = news_stats[symbol].get(str(year), 0) + int(count)
-            # Save stats every 10 chunks
-            if chunk_idx % 10 == 0:
-                with open(news_stats_json, 'w') as f:
-                    json.dump(news_stats, f, indent=4)
+                
         except Exception as e:
             print(f"[ERROR] Exception in chunk {chunk_idx}: {e}", flush=True)
+            
     # Ensure all stocks and all years are present in stats
     all_years = [str(y) for y in range(year_start, year_end + 1)]
     for ticker in tickers:
@@ -80,8 +79,10 @@ def filter_and_stats_news(news_csv, output_dir, filtered_news_csv, news_stats_js
         for year in all_years:
             if year not in news_stats[ticker]:
                 news_stats[ticker][year] = 0
+                
     with open(news_stats_json, 'w') as f:
         json.dump(news_stats, f, indent=4)
+        
     print(f"[INFO] Filtered news CSV saved to {filtered_news_csv}")
     print(f"[INFO] News stats saved to {news_stats_json}")
 
