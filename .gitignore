@@ -1,5 +1,6 @@
 Stock_news/
 Stock_price/
+data_stats/sp500.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

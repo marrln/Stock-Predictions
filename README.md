@@ -22,17 +22,56 @@ Stock_price/
 │   ├── AA.csv
 │   └── ...
 ```
-4. After downloading and unzipping the dataset, run the preprocessing script to only keep data from 2018 to 2023 and only keep stocks that have samples for all these years. Note that this step may take a while due to the size of the dataset.
-```bash
-python crop_fnspid.py
+
+4. Download the S&P 500 tickers CSV:
+
+Download the file from [here](https://github.com/datasets/s-and-p-500-companies/blob/main/data/constituents.csv) and rename it to `sp500.csv` and place it in the `data_stats/` directory, so the structure is:
 ```
+data_stats/
+├── sp500.csv
+Stock_news/
+├── nasdaq_external_data.csv (deletable)
+├── sp500_news.csv (~8GB)
+Stock_price/
+├── full_history/ (~600MB)
+│   ├── A.csv (2018-2023)
+│   ├── AA.csv
+│   └── ...
+```
+
+5. After downloading and unzipping the dataset, run the following scripts to preprocess the data for your experiments:
+
+**Step 1: Filter and clean stock price data**
+
+Run `1_stock_select.py` to:
+	- Remove tickers not in the S&P 500 list
+	- Filter each stock's CSV to only keep rows from 2018 to 2023
+	- Delete any CSVs that are empty after filtering
+	- Delete any CSVs that do not have at least one row for every year in the range
+	- Generate per-ticker, per-year statistics in `data_stats/price_stats.json`
+
+**Step 2: Filter and clean news data**
+
+Run `2_choose_news_for_stocks.py` to:
+	- Filter the news CSV to only keep articles for the valid tickers and within the date range 2018-2023
+	- Drop unnecessary columns
+	- Write the filtered news to `Stock_news/sp500_news.csv`
+	- Generate per-ticker, per-year news article counts in `data_stats/news_stats.json`
+
+```bash
+python 1_stock_select.py
+python 2_choose_news_for_stocks.py (this may take a while)
+```
+
 Now the structure should look like this:
 ```
 data_stats/
 ├── price_stats.json
+├── news_stats.json
+├── sp500.csv
 Stock_news/
 ├── nasdaq_external_data.csv (deletable)
-├── filtered_news.csv (~8GB)
+├── sp500_news.csv (~8GB)
 Stock_price/
 ├── full_history/ (~600MB)
 │   ├── A.csv (2018-2023)
