@@ -79,6 +79,36 @@ Stock_price/
 │   └── ...
 ```
 
+**Step 3: Clean and deduplicate news data**
+
+Run `3_data_clean.py` to:
+	- Identify tickers with missing news for some or all years (2018-2023)
+	- Delete stock CSV files for tickers with no news data at all
+	- Validate tickers with partial news based on S&P 500 "Date added" field
+	- Separate article text into a separate CSV file for storage efficiency
+	- Deduplicate articles based on Article_title while preserving all stock symbols and dates
+	- Update indices to keep only the first occurrence of each unique article
+
+```bash
+python 3_data_clean.py
+```
+
+Now the structure should look like this:
+```
+data_stats/ (~1MB)
+├── price_stats.json
+├── news_stats.json
+├── sp500.csv
+Stock_news/
+├── sp500_news_dedup_final_no_articles.csv (~30MB)
+├── sp500_news_dedup_articles.csv (~1.4GB)
+Stock_price/
+├── full_history/ (~52MB after cleanup)
+│   ├── A.csv (2018-2023)
+│   ├── AAPL.csv
+│   └── ...
+```
+
 ## Bibliography
 
 - Zihan Dong, Xinyu Fan, Zhiyuan Peng "FNSPID: A Comprehensive Financial News Dataset in Time Series" [Paper Link](https://arxiv.org/abs/2402.06698/)
