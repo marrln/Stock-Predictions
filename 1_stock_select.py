@@ -61,7 +61,8 @@ def select_stocks_in_range(stocks_csv, stocks_price_dir, year_start, year_end):
 def calc_csv_stats(price_stats, stocks_price_dir, year_start, year_end):
     """Calculate and save statistics for each stock CSV."""
     stats = {}
-    for fname in os.listdir(stocks_price_dir):
+    # Sort filenames to ensure consistent ordering across different systems
+    for fname in sorted(os.listdir(stocks_price_dir)):
         if not fname.endswith('.csv'):
             continue
         ticker = fname[:-4]
