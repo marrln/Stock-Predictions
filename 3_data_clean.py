@@ -1,3 +1,9 @@
+"""
+Identifies and removes tickers without news coverage, deduplicates news articles by title.
+Separates article text into standalone CSV to reduce memory usage during processing.
+Validates partial news coverage against S&P 500 addition dates and outputs cleaned datasets.
+"""
+
 import os
 import json
 import pandas as pd
