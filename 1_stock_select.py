@@ -1,3 +1,9 @@
+"""
+Filters S&P 500 stock price data to retain only tickers with complete data from 2018-2023.
+Removes rows with NaN values, ensures all years are present, and generates per-ticker statistics.
+Outputs cleaned CSV files and price_stats.json for downstream analysis.
+"""
+
 import os
 import pandas as pd
 import json
@@ -77,13 +83,18 @@ def calc_csv_stats(price_stats, stocks_price_dir, year_start, year_end):
                 # Return: pct change from first to last valid close, robust to NaN/zero
                 year_df = year_df.sort_values('date')
                 valid_closes = year_df['close'].dropna()
-                if len(valid_closes) > 1 and valid_closes.iloc[0] != 0:
+                # Use epsilon threshold to prevent division by near-zero values
+                if len(valid_closes) > 1 and valid_closes.iloc[0] > 1e-6:
                     annual_return = (valid_closes.iloc[-1] - valid_closes.iloc[0]) / valid_closes.iloc[0]
                 else:
                     annual_return = None
                 # Correlation between open and close
-                if year_df['open'].std() > 0 and year_df['close'].std() > 0:
+                # Use epsilon threshold to ensure meaningful standard deviations
+                if year_df['open'].std() > 1e-6 and year_df['close'].std() > 1e-6:
                     corr_open_close = year_df['open'].corr(year_df['close'])
+                    # Handle potential NaN from correlation calculation
+                    if pd.isna(corr_open_close):
+                        corr_open_close = None
                 else:
                     corr_open_close = None
                 ticker_stats[str(year)] = {
@@ -118,7 +129,8 @@ if __name__ == "__main__":
                     if col in df.columns:
                         df[col] = df[col].round(4)
                 if 'volume' in df.columns:
-                    df['volume'] = df['volume'].round().astype('Int64')
+                    # Handle NaN values in volume before converting to Int64
+                    df['volume'] = df['volume'].fillna(0).round().astype('Int64')
                 # Sort by date ascending
                 if 'date' in df.columns:
                     df = df.sort_values('date')
