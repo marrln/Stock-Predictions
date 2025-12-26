@@ -30,11 +30,10 @@ Download the file from [here](https://github.com/datasets/s-and-p-500-companies/
 data_stats/
 ├── sp500.csv
 Stock_news/
-├── nasdaq_external_data.csv (deletable)
-├── sp500_news.csv (~8GB)
+├── nasdaq_external_data.csv (~22GB)
 Stock_price/
-├── full_history/ (~600MB)
-│   ├── A.csv (2018-2023)
+├── full_history/ (~2GB)
+│   ├── A.csv 
 │   ├── AA.csv
 │   └── ...
 ```
