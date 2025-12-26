@@ -18,14 +18,15 @@ YEAR_END = 2023
 
 def select_stocks_in_range(stocks_csv, stocks_price_dir, year_start, year_end):
     """Select stocks that have complete price data from year_start to year_end."""
-    stock_tickers = set(pd.read_csv(stocks_csv)['Symbol'])
+    stock_tickers = set(ticker.lower() for ticker in pd.read_csv(stocks_csv)['Symbol'])
     for fname in os.listdir(stocks_price_dir):
         if not fname.endswith('.csv'):
             continue
         ticker = fname[:-4]
+        ticker_lower = ticker.lower()
         file_path = os.path.join(stocks_price_dir, fname)
-        # Remove file if ticker not in stock list
-        if ticker not in stock_tickers:
+        # Remove file if ticker not in stock list (case-insensitive)
+        if ticker_lower not in stock_tickers:
             try:
                 os.remove(file_path)
                 print(f"[INFO] Deleted file for unavailable ticker: {fname}")
