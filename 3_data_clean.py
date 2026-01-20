@@ -109,6 +109,7 @@ def separate_articles_from_news(input_csv, output_no_articles_csv, output_articl
 
 def deduplicate_articles(
     input_no_articles_csv,
+    sorted_no_articles_csv,
     output_dedup_no_articles_csv,
     input_articles_csv,
     output_dedup_articles_csv,
@@ -120,8 +121,8 @@ def deduplicate_articles(
     df = pd.read_csv(input_no_articles_csv)
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df.sort_values(by='Date', ascending=True).reset_index(drop=True)
-    df.to_csv(input_no_articles_csv, index=False)
-    print(f"[INFO] Sorted data by Date and saved to {input_no_articles_csv}", flush=True)
+    df.to_csv(sorted_no_articles_csv, index=False)
+    print(f"[INFO] Sorted data by Date and saved to {sorted_no_articles_csv}", flush=True)
 
     # Deduplicate df based on Article_title
     dedup_df = df.groupby('Article_title').agg({
@@ -182,6 +183,7 @@ if __name__ == "__main__":
 
     # Step 4: Deduplicate articles based on Article_title
     deduplicate_articles(
+        SP500_NEWS_NO_ARTICLES_CSV,
         SP500_NEWS_NO_ARTICLES_NEW_CSV,
         SP500_NEWS_DEDUP_NO_ARTICLES_CSV,
         SP500_NEWS_ARTICLES_CSV,
