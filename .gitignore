@@ -3,6 +3,7 @@ Stock_price/
 data_stats/sp500.csv
 data_cache/
 archive/
+backup/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
