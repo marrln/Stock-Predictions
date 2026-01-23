@@ -31,6 +31,7 @@ ARTICLES_CSV = os.path.join(NEWS_DIR, "articles.csv")
 METADATA_JSON = os.path.join(NEWS_DIR, "url_metadata.json")
 NEWS_STATS_JSON = os.path.join("data_stats", "news_stats.json")
 VALID_MARKET_DAYS = os.path.join("data_stats", "valid_market_days.csv")
+STOCKS_PRICE_DIR = os.path.join("Stock_price", "full_history")
 
 # Constants
 NASDAQ_PREFIX = "https://www.nasdaq.com/articles/"
@@ -65,6 +66,34 @@ def parse_date_to_utc(dt_str: str):
         return ts
     except Exception:
         return None
+
+
+def remove_price_files_without_news(news_tickers: Set[str]) -> int:
+    """Delete stock CSVs from `Stock_price/full_history` if ticker not present in news tickers.
+    Returns number of files removed."""
+    if not news_tickers:
+        print("[INFO] No news tickers available; skipping removal of stock price files.")
+        return 0
+    if not os.path.exists(STOCKS_PRICE_DIR):
+        print(f"[WARN] Stocks price directory not found: {STOCKS_PRICE_DIR}")
+        return 0
+
+    removed = 0
+    for fname in os.listdir(STOCKS_PRICE_DIR):
+        if not fname.lower().endswith('.csv'):
+            continue
+        ticker = os.path.splitext(fname)[0].upper()
+        if ticker not in news_tickers:
+            path = os.path.join(STOCKS_PRICE_DIR, fname)
+            try:
+                os.remove(path)
+                removed += 1
+                print(f"[REMOVE] Deleted price file: {fname}")
+            except Exception as e:
+                print(f"[ERROR] Failed to delete {fname}: {e}")
+
+    print(f"[INFO] Removed {removed} stock price files not present in news stats")
+    return removed
 
 
 def main():
@@ -218,6 +247,10 @@ def main():
         print(f"[INFO] Articles updated. Removed articles: {removed_articles:,}. Remaining: {len(df_articles):,}.")
     else:
         print(f"[WARN] Articles file missing: {ARTICLES_CSV}")
+
+    # Remove stock price files not present in news stats
+    removed_price_files = remove_price_files_without_news(news_tickers)
+    print(f"[INFO] Removed {removed_price_files} stock price files not present in {NEWS_STATS_JSON}")
 
     # Compute percentage of articles posted before/after (based on metadata CSV)
     if os.path.exists(METADATA_CSV):

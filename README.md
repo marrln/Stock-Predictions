@@ -66,6 +66,7 @@ Run `3_data_clean.py` to:
 - Parse the `Date` column (assumed UTC) and add a `Posted_After_Close` boolean column indicating whether the article was posted at or after US market close (4:00 PM US/Eastern)
 - If the article's date is not a valid market day (based on `data_stats/valid_market_days.csv`), it is considered "before close" automatically (weekends/holidays)
 - If the article date is after the last valid market day in the file, the entry is removed
+- **Prune stock price files:** delete `.csv` files in `Stock_price/full_history` whose tickers are not present in `data_stats/news_stats.json` 
 
 ```bash
 python3 1_stock_select.py
@@ -93,7 +94,7 @@ Stock_news/
 ├── metadata.csv (~40MB)
 ├── articles.csv (~1.2GB)
 Stock_price/
-├── full_history/ (~52MB)
+├── full_history/ (~20MB)
 │   ├── A.csv (2018-2023)
 │   ├── AAPL.csv
 │   └── ...
