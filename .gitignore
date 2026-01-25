@@ -1,4 +1,6 @@
-Stock_news/
+Stock_news/filtered_nasdaq_exteral_data.csv
+Stock_news/articles.csv
+Stock_news/url_metadata.json
 Stock_price/
 data_stats/sp500.csv
 data_cache/
