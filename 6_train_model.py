@@ -19,10 +19,7 @@ SEQ_LEN = 8
 
 
 def get_dataloaders(batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS):
-    """Load dataloaders from saved datasets.
-    
-    If datasets don't exist, uncomment the build_datasets() call below to create them.
-    """
+    """Load dataloaders from saved datasets. If datasets are not found, build and save them first."""
     try:
         return load_dataloaders(DATA_DIR, batch_size, num_workers)
     except FileNotFoundError:
@@ -33,7 +30,7 @@ def get_dataloaders(batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS
 
 
 if __name__ == "__main__":
-    # Load data
+    
     train_loader, val_loader, test_loader = get_dataloaders()
     
     # Inspect a batch
@@ -42,4 +39,4 @@ if __name__ == "__main__":
     print(f"Features: {xb.shape[-1]} dimensions")
     print(f"Sequence length: {xb.shape[1]} timesteps")
     
-    # TODO: Add LSTM model definition and training loop here
+    # TODO: Add training here
