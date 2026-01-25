@@ -32,7 +32,34 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data._utils.collate import default_collate
 from pathlib import Path
+
+
+def _drop_meta_collate(batch):
+    """Collate function that drops any meta and returns (X_batch, y_batch).
+
+    Accepts samples that are tuples like `(X, y)` or `(X, y, meta)` and
+    returns two tensors: stacked X and stacked y.
+    """
+    X_list = []
+    y_list = []
+    for sample in batch:
+        if isinstance(sample, dict):
+            # rarely used, but support dict samples: prefer 'input'/'x' and 'target'/'y'
+            x = sample.get("input", sample.get("x", None))
+            y = sample.get("target", sample.get("y", None))
+            if x is None or y is None:
+                raise ValueError("Batch dict must contain 'input'/'x' and 'target'/'y' keys")
+        else:
+            if len(sample) < 2:
+                raise ValueError("Dataset sample must have at least (X, y)")
+            x, y = sample[0], sample[1]
+        X_list.append(x)
+        y_list.append(y)
+
+    # Use default_collate to turn lists of arrays/tensors into batched tensors
+    return default_collate(X_list), default_collate(y_list)
 
 
 DEFAULT_SENTIMENT_CSV = "data_stats/daily_sentiment.csv"
@@ -436,10 +463,19 @@ def make_dataloaders(
     batch_size: int = 64,
     num_workers: int = 0,
     shuffle_train: bool = True,
+    collate_fn=None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_train, num_workers=num_workers)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    """Create DataLoaders that always yield `(X, y)` batches.
+
+    By default we use `_drop_meta_collate` which removes any `meta` returned
+    by the dataset and returns `(X_batch, y_batch)` tensors.
+    """
+    if collate_fn is None:
+        collate_fn = _drop_meta_collate
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_train, num_workers=num_workers, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn)
     return train_loader, val_loader, test_loader
 
 
