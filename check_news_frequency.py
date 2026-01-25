@@ -215,24 +215,15 @@ def plot_top10_tickers_per_day(valid_days):
     for t in top10:
         print(f'  {t}: {int(totals[t])}')
 
+    # Also print top 50 tickers as a list (by article count)
+    top50 = totals.nlargest(50)
+    print('\nTop 50 tickers by article count:')
+    for t, cnt in top50.items():
+        print(f'  {t}: {int(cnt)}')
 
-def find_tickers_full_coverage(valid_days):
-    """Return list of tickers that have at least one article assigned to every valid market day."""
-    df = load_metadata_with_tickers()
-    if df.empty:
-        return []
-
-    per_ticker_dates = {}
-    for _, r in df.iterrows():
-        assigned = assign_single_to_valid_day(r['date'], valid_days)
-        if assigned is None:
-            continue
-        for t in r['Tickers']:
-            per_ticker_dates.setdefault(t, set()).add(assigned)
-
-    required = set(valid_days)
-    full = [t for t, s in per_ticker_dates.items() if required.issubset(s)]
-    return sorted(full)
+    # Compact list of top 50 tickers (comma-separated)
+    print('\nTop 50 tickers (list):')
+    print(', '.join(top50.index.tolist()))
 
 
 def main():
@@ -257,18 +248,6 @@ def main():
     print('\nTop 10 market days by assigned article count:')
     for d, c in top.items():
         print(f'  {d}: {int(c)}')
-
-    # Find tickers with full coverage across all valid market days
-    print('\n[INFO] Searching for tickers with an article on every valid market day...')
-    full_coverage = find_tickers_full_coverage(valid_days)
-    print(f'[INFO] Found {len(full_coverage)} tickers with complete coverage')
-    if full_coverage:
-        print('Sample tickers with full coverage (first 50):')
-        print(', '.join(full_coverage[:50]))
-        # Save list
-        os.makedirs(FIGURES_DIR, exist_ok=True)
-        pd.DataFrame({'Ticker': full_coverage}).to_csv(os.path.join(FIGURES_DIR, 'tickers_full_coverage.csv'), index=False)
-        print(f'[INFO] Wrote full coverage tickers to {os.path.join(FIGURES_DIR, "tickers_full_coverage.csv")}')
 
     # New plot: per-ticker for top 10 tickers
     print('\n[INFO] Aggregating and plotting top-10 ticker frequencies...')
