@@ -1,32 +1,16 @@
-"""LSTM_model
-
-Regression-only LSTM for stock sequences (predicts next-day return).
-
-Works with dataloaders produced by PriceNewsDataset.py.
-
+"""LSTM_model for price-news regression task.
 Usage example:
-	from PriceNewsDataset import load_dataloaders
-	from LSTM_model import PriceNewsLSTMReg
-
-	train_loader, val_loader, test_loader = load_dataloaders()
-	input_size = train_loader.dataset.X.shape[-1]
 	model = PriceNewsLSTMReg(input_size=input_size, hidden_size=128, num_layers=2, dropout=0.2)
-
 """
 
 from __future__ import annotations
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
 
 
 class PriceNewsLSTMReg(nn.Module):
 	"""Regression-only LSTM model.
-
 	Predicts a single continuous value (e.g., next-day return).
-
 	Parameters:
 		input_size: number of features per timestep
 		hidden_size: LSTM hidden units
