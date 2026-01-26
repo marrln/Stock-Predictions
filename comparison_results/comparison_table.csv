@@ -1,0 +1,5 @@
+Metric,Model,Baseline,Improvement
+MSE,0.013620,0.004423,-207.9%
+MAE,0.078032,0.042286,-84.5%
+RMSE,0.116705,0.066505,-75.5%
+Directional Accuracy,96.61%,97.66%,-1.0%

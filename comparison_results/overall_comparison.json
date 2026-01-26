@@ -1,0 +1,52 @@
+{
+  "model": {
+    "mse": 0.013620121404528618,
+    "mae": 0.07803191989660263,
+    "rmse": 0.11670527582131246,
+    "dir_acc": 0.9661290322580646
+  },
+  "baseline": {
+    "mse": 0.004422951630493452,
+    "mae": 0.042285506801375154,
+    "rmse": 0.06650527520801228,
+    "dir_acc": 0.9766129032258064
+  },
+  "config": {
+    "tickers": [
+      "AMZN",
+      "EBAY",
+      "IBM",
+      "AAPL",
+      "MSFT"
+    ],
+    "seq_len": 8,
+    "target_type": "return",
+    "sentiment_fill": "ffill",
+    "batch_size": 64,
+    "target_scaling": true,
+    "hidden_size": 64,
+    "num_layers": 5,
+    "dropout": 0.0,
+    "pooling": "last",
+    "bidirectional": false,
+    "use_ticker_embedding": true,
+    "ticker_emb_dim": 16,
+    "optimizer": "adam",
+    "lr": 0.0001,
+    "weight_decay": 0.0,
+    "loss": "huber",
+    "huber_delta": 1.0,
+    "epochs": 100,
+    "early_stopping_patience": 20,
+    "grad_clip": 1.0,
+    "scheduler_type": "plateau",
+    "scheduler_factor": 0.5,
+    "scheduler_patience": 5,
+    "scheduler_min_lr": 1e-06,
+    "experiment_name": "ONE",
+    "save_dir": "experiments",
+    "data_dir": "processed_data"
+  },
+  "model_path": "experiments/h64_l5_d0.0_lr0.0001_b64_optadam_losshuber_hd1.0_ptscale/best.pt",
+  "data_dir": "processed_data/5tickers_seq8"
+}
