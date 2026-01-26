@@ -107,9 +107,10 @@ source venv/bin/activate
 
 Expected structure:
 ```
-data_stats/ (under 1MB)
+data_stats/ (~7MB)
 ├── price_stats.json
 ├── news_stats.json
+├── daily_sentiment.csv        
 ├── sp500.csv
 Stock_news/
 ├── nasdaq_external_data.csv (~22GB) (delete this to save space)
@@ -117,6 +118,8 @@ Stock_news/
 ├── url_metadata.json (~80MB)
 ├── metadata.csv (~40MB)
 ├── articles.csv (~1.2GB)
+├── summaries.csv (~130MB)    
+├── articles_sentiment.csv (~6MB)  
 Stock_price/
 ├── full_history/ (~20MB)
 │   ├── A.csv (2018-2023)
