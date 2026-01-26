@@ -173,6 +173,35 @@ def load_checkpoint(
 	return ckpt
 
 
+def _compute_unscaled_metrics(model: torch.nn.Module, loader: torch.utils.data.DataLoader, device: torch.device, y_scaler: Any):
+    """Compute MSE/MAE/RMSE/dir_acc on the original (unscaled) target values.
+
+    Assumes y_scaler implements inverse_transform(array.reshape(-1,1)).
+    Returns a dict with keys 'mse','mae','rmse','dir_acc'.
+    """
+    import numpy as _np
+    preds = []
+    trues = []
+    model.eval()
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb = xb.to(device)
+            out = model(xb).cpu().numpy().reshape(-1, 1)
+            yb_np = yb.numpy().reshape(-1, 1)
+            preds.append(out)
+            trues.append(yb_np)
+    preds = _np.concatenate(preds, axis=0)
+    trues = _np.concatenate(trues, axis=0)
+    # inverse-transform
+    ipreds = y_scaler.inverse_transform(preds).ravel()
+    itrues = y_scaler.inverse_transform(trues).ravel()
+    mse = float(((ipreds - itrues) ** 2).mean())
+    mae = float(_np.abs(ipreds - itrues).mean())
+    rmse = float(_np.sqrt(((ipreds - itrues) ** 2).mean()))
+    dir_acc = float((_np.sign(ipreds) == _np.sign(itrues)).mean())
+    return {"mse": mse, "mae": mae, "rmse": rmse, "dir_acc": dir_acc}
+
+
 def train_model(
     model: torch.nn.Module,
     train_loader: torch.utils.data.DataLoader,
@@ -182,26 +211,49 @@ def train_model(
     lr: float = 1e-3,
     weight_decay: float = 0.0,
     loss_fn: Optional[nn.Module] = None,
-    scheduler: Optional[LRScheduler] = None,  # Fixed type
+    scheduler: Optional[LRScheduler] = None,
+    scheduler_type: Optional[str] = None,  # 'plateau' to use ReduceLROnPlateau
+    scheduler_kwargs: Optional[Dict[str, Any]] = None,
     save_dir: str | Path = "checkpoints",
     ckpt_name: str = "best.pt",
-    early_stopping_patience: Optional[int] = 5,
+    early_stopping_patience: Optional[int] = 10,
     grad_clip: Optional[float] = 1.0,
-    verbose: bool = True,  # Add verbosity control
+    verbose: bool = True,
+    y_scaler: Optional[object] = None,  # If provided, used to report unscaled metrics and saved into checkpoint
 ) -> Tuple[Dict[str, list], Path]:
     """Full training loop with validation and checkpointing.
-    
+
+    If `scheduler_type == 'plateau'` and no `scheduler` is passed, builds a
+    ReduceLROnPlateau scheduler with sensible defaults which can be overridden
+    via `scheduler_kwargs`.
+
+    When `y_scaler` is provided (e.g., a fitted sklearn StandardScaler), this
+    function will compute and log **unscaled** validation metrics (MSE/MAE/RMSE)
+    for interpretability while training still optimizes the (possibly scaled)
+    loss used by `loss_fn`.
+
     Saves the best model (lowest validation loss) to `save_dir/ckpt_name`.
     Returns `(history, best_ckpt_path)`.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    
+
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     if loss_fn is None:
         loss_fn = nn.MSELoss()
-    
+
+    # Build scheduler if requested
+    if scheduler is None and scheduler_type == "plateau":
+        kwargs = {"factor": 0.5, "patience": 3, "min_lr": 1e-6}
+        if scheduler_kwargs:
+            kwargs.update(scheduler_kwargs)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=kwargs["factor"], patience=kwargs["patience"], min_lr=kwargs["min_lr"]
+        )
+        if verbose:
+            print(f"Using ReduceLROnPlateau(factor={kwargs['factor']}, patience={kwargs['patience']}, min_lr={kwargs['min_lr']})")
+
     save_dir = Path(save_dir)
     best_ckpt_path = save_dir / ckpt_name
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +269,9 @@ def train_model(
         "val_rmse": [],
         "lr": []  # Track learning rate
     }
+    # Store scalar best values that will be set during training
+    history["best_val"] = None  # Will be updated at end
+    history["best_epoch"] = None  # Will be updated at end
     
     for epoch in range(1, epochs + 1):
         train_loss = train_one_epoch(
@@ -224,47 +279,99 @@ def train_model(
         )
         val_loss, val_metrics = evaluate(model, val_loader, loss_fn, device)
         
-        # Record history
+        # If a target scaler is provided, compute unscaled metrics for interpretability
+        unscaled_metrics = None
+        if y_scaler is not None:
+            try:
+                unscaled_metrics = _compute_unscaled_metrics(model, val_loader, device, y_scaler)
+                # prefer unscaled MAE/RMSE for history and printing
+                history["val_mae"].append(unscaled_metrics["mae"])
+                history["val_rmse"].append(unscaled_metrics["rmse"])
+            except Exception as e:
+                # fallback to scaled if unscaled computation fails
+                if "val_mae" not in history or len(history["val_mae"]) < len(history["train_loss"]) + 1:
+                    history["val_mae"].append(val_metrics["mae"])
+                    history["val_rmse"].append(val_metrics["rmse"])
+                print(f"Warning: failed to compute unscaled metrics: {e}")
+        else:
+            history["val_mae"].append(val_metrics["mae"])
+            history["val_rmse"].append(val_metrics["rmse"])
+
+        # Also always record loss and train_loss
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
-        history["val_mae"].append(val_metrics["mae"])
-        history["val_rmse"].append(val_metrics["rmse"])
-        history["lr"].append(optimizer.param_groups[0]['lr'])
-        
+
         # Scheduler step (handle both regular and ReduceLROnPlateau)
+        lr_before = optimizer.param_groups[0]['lr']
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_loss)
             else:
                 scheduler.step()
+        lr_after = optimizer.param_groups[0]['lr']
+        history["lr"].append(lr_after)
+        if scheduler is not None and lr_after < lr_before and verbose:
+            print(f"LR reduced: {lr_before:.2e} -> {lr_after:.2e}")
         
         improved = val_loss < best_val
         if improved:
             best_val = val_loss
             best_epoch = epoch
             no_improve = 0
-            save_checkpoint(
-                best_ckpt_path, 
-                model, 
-                optimizer, 
-                epoch=epoch, 
-                best_val=best_val,
-                extra={
-                    "val_metrics": val_metrics, 
-                    "train_loss": train_loss,
-                    "history": history  # Save history in checkpoint
+            extra = {
+                "val_metrics": val_metrics,
+                "train_loss": train_loss,
+                "history": history,  # Save history in checkpoint
+            }
+            if unscaled_metrics is not None:
+                extra["val_metrics_unscaled"] = unscaled_metrics
+            # If a y_scaler was provided and exposes mean_/scale_, persist its params
+            if y_scaler is not None and hasattr(y_scaler, "mean_") and hasattr(y_scaler, "scale_"):
+                try:
+                    extra["target_scaler"] = {
+                        "mean": y_scaler.mean_.tolist(),
+                        "scale": y_scaler.scale_.tolist(),
+                    }
+                except Exception:
+                    # best-effort: skip persisting scaler if it cannot be serialized
+                    pass
+
+            # Persist simple model config so we can reconstruct the architecture later
+            try:
+                extra["model_config"] = {
+                    "input_size": getattr(model, "input_size", None),
+                    "hidden_size": getattr(model, "hidden_size", None),
+                    "num_layers": getattr(model, "num_layers", None),
+                    "dropout": getattr(model, "dropout", None),
+                    "bidirectional": getattr(model, "bidirectional", None),
                 }
+            except Exception:
+                pass
+            save_checkpoint(
+                best_ckpt_path,
+                model,
+                optimizer,
+                epoch=epoch,
+                best_val=best_val,
+                extra=extra,
             )
         else:
             no_improve += 1
         
         if verbose:
+            # Prefer unscaled MAE/RMSE when available for interpretability
+            if unscaled_metrics is not None:
+                disp_mae = unscaled_metrics["mae"]
+                disp_rmse = unscaled_metrics["rmse"]
+            else:
+                disp_mae = val_metrics["mae"]
+                disp_rmse = val_metrics["rmse"]
             print(
                 f"Epoch {epoch:03d} | "
                 f"train_loss={train_loss:.5f} | "
                 f"val_loss={val_loss:.5f} | "
-                f"val_mae={val_metrics['mae']:.5f} | "
-                f"val_rmse={val_metrics['rmse']:.5f} | "
+                f"val_mae={disp_mae:.5f} | "
+                f"val_rmse={disp_rmse:.5f} | "
                 f"lr={history['lr'][-1]:.2e}"
             )
         
@@ -275,14 +382,28 @@ def train_model(
             break
     
     # Also save a 'last.pt' for convenience
+    extra_last = {"history": history}
+    if y_scaler is not None and hasattr(y_scaler, "mean_") and hasattr(y_scaler, "scale_"):
+        try:
+            extra_last["target_scaler"] = {
+                "mean": y_scaler.mean_.tolist(),
+                "scale": y_scaler.scale_.tolist(),
+            }
+        except Exception:
+            pass
+
     save_checkpoint(
-        save_dir / "last.pt", 
-        model, 
-        optimizer, 
+        save_dir / "last.pt",
+        model,
+        optimizer,
         epoch=epochs if epoch >= epochs else epoch,
         best_val=best_val,
-        extra={"history": history}
+        extra=extra_last,
     )
+    
+    # Update history with final best values
+    history["best_val"] = best_val
+    history["best_epoch"] = best_epoch
     
     if verbose and best_epoch != -1:
         print(f"Training complete. Best epoch: {best_epoch}, "
