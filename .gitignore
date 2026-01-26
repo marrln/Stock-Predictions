@@ -1,4 +1,4 @@
-checkpoints/
+experiments/
 processed_data/
 
 Stock_news/filtered_nasdaq_exteral_data.csv
