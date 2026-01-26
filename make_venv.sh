@@ -8,7 +8,7 @@ set -euo pipefail
 #   ./make_venv.sh --cuda cu118 -n .venv
 #   ./make_venv.sh --cpu -p python3.10
 
-VENV_DIR="venv"
+VENV_DIR=".venv"
 PYTHON_BIN="python3"
 CUDA_MODE="auto"   # "auto", "cpu", or e.g. "cu118"
 ASSUME_YES=0
@@ -18,7 +18,7 @@ usage() {
 Usage: $0 [-n VENV_DIR] [-p PYTHON_BIN] [--cpu | --cuda CUVER] [--yes]
 
 Options:
-    -n, --name VENV_DIR      virtualenv directory (default: venv)
+    -n, --name VENV_DIR      virtualenv directory (default: .venv)
     -p, --python PYTHON_BIN  python executable to use (default: python3)
             --cpu                force CPU-only PyTorch
             --cuda CUVER         force specific CUDA build (e.g. cu118, cu117)
