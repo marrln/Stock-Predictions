@@ -1,0 +1,23 @@
+# Quick training configuration
+tickers: ["AAPL", "MSFT", "GOOGL"]
+seq_len: 8
+target_type: "return"
+batch_size: 64
+
+model:
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.2
+  pooling: "last"
+  use_ticker_embedding: true
+
+training:
+  optimizer: "adam"
+  lr: 0.001
+  epochs: 50
+  early_stopping_patience: 10
+  loss: "mse"
+
+experiment:
+  name: "quick_experiment"
+  save_dir: "experiments/quick"

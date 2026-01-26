@@ -1,0 +1,21 @@
+# Full hyperparameter sweep configuration
+tickers: ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META"]
+seq_len: 10
+target_type: "return"
+batch_size: 64
+
+sweep:
+  hidden_sizes: [64, 128, 256]
+  num_layers: [1, 2, 3]
+  dropout: [0.1, 0.2, 0.3]
+  learning_rates: [0.001, 0.0005, 0.0001]
+  pooling: ["last", "mean", "max"]
+
+training:
+  optimizer: "adam"
+  epochs: 100
+  early_stopping_patience: 20
+  loss: "mse"
+
+experiment:
+  save_dir: "experiments/full_sweep"
