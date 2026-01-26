@@ -1,49 +1,61 @@
 """Checkpoint utilities for naming and organization."""
+from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, Any
 import json
+from pathlib import Path
+from typing import Dict, Any, List, Tuple, Optional
+import torch
 
 
 def make_checkpoint_name(config: Dict[str, Any], prefix: str = "best") -> str:
     """Generate a descriptive checkpoint filename from hyperparameters.
     
-    Example: best_h128_l2_d0.2_lr0.001_b64.pt
+    Example: best_h128_l2_d0.2_lr0.001_b64_optadam_losshuber_hd1.0_ptscale.pt
     """
     parts = [prefix]
-    parts.append(f"h{config['hidden_size']}")
-    parts.append(f"l{config['num_layers']}")
-    parts.append(f"d{config['dropout']}")
-    parts.append(f"lr{config['lr']}")
-    parts.append(f"b{config['batch_size']}")
+    
+    # Core architecture parameters
+    parts.append(f"h{config.get('hidden_size', 128)}")
+    parts.append(f"l{config.get('num_layers', 2)}")
+    parts.append(f"d{config.get('dropout', 0.2)}")
+    
+    # Training parameters
+    parts.append(f"lr{config.get('lr', 0.001)}")
+    parts.append(f"b{config.get('batch_size', 64)}")
+    
+    # Optional pooling
     if config.get('pooling') and config['pooling'] != 'last':
         parts.append(f"p{config['pooling']}")
+    
+    # Optimizer
+    if config.get('optimizer'):
+        parts.append(f"opt{config['optimizer']}")
+    
+    # Loss function
+    if config.get('loss') and config['loss'] != 'mse':
+        parts.append(f"loss{config['loss']}")
+        if config['loss'] == 'huber' and 'huber_delta' in config:
+            parts.append(f"hd{config['huber_delta']}")
+    
+    # Target scaling
+    if config.get('target_scaling', True):
+        parts.append("ptscale")
+    
     return "_".join(parts) + ".pt"
 
 
 def make_save_dir(config: Dict[str, Any], base_dir: str = "experiments") -> Path:
-    """Create experiment directory with hyperparameter configuration.
-    
-    Example: experiments/h128_l2_d0.2_lr0.001_b64/
-    """
+    """Create experiment directory with hyperparameter configuration."""
     dir_name = make_checkpoint_name(config, prefix="").strip("_").replace(".pt", "")
     save_dir = Path(base_dir) / dir_name
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save config to JSON for reproducibility
+    # Save config for reproducibility
     config_path = save_dir / "config.json"
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(config, f, indent=2, default=str)  # Handle non-serializable types
     
     return save_dir
-
-
-def get_all_tickers(price_dir: str = "Stock_price/full_history"):
-    """Extract all ticker symbols from CSV filenames in the price directory."""
-    price_path = Path(price_dir)
-    csv_files = list(price_path.glob("*.csv"))
-    tickers = sorted([f.stem for f in csv_files if f.stem.upper() == f.stem])
-    return tickers
 
 
 def load_config_from_dir(exp_dir: Path) -> Dict[str, Any]:
@@ -51,14 +63,16 @@ def load_config_from_dir(exp_dir: Path) -> Dict[str, Any]:
     config_path = exp_dir / "config.json"
     if not config_path.exists():
         return {}
+    
     with open(config_path, "r") as f:
         return json.load(f)
 
 
-def find_all_experiments(base_dir: str = "experiments") -> list:
+def find_all_experiments(base_dir: str = "experiments") -> List[Tuple[Path, Dict, Path]]:
     """Find all experiment directories with checkpoints.
     
-    Returns list of (exp_dir, config, best_ckpt_path) tuples.
+    Returns:
+        List of (exp_dir, config, best_ckpt_path) tuples
     """
     base_path = Path(base_dir)
     if not base_path.exists():
@@ -68,12 +82,70 @@ def find_all_experiments(base_dir: str = "experiments") -> list:
     for exp_dir in base_path.iterdir():
         if not exp_dir.is_dir() or exp_dir.name == "comparison":
             continue
-        
+
+        # Prefer explicit best checkpoint, but fall back to last.pt or any .pt file
         best_ckpt = exp_dir / "best.pt"
-        if not best_ckpt.exists():
-            continue
-        
+        last_ckpt = exp_dir / "last.pt"
+        ckpt_path = None
+
+        if best_ckpt.exists():
+            ckpt_path = best_ckpt
+        elif last_ckpt.exists():
+            ckpt_path = last_ckpt
+        else:
+            # Fall back to first available .pt file (if any)
+            pts = list(exp_dir.glob("*.pt"))
+            if pts:
+                ckpt_path = sorted(pts)[0]
+            else:
+                # no checkpoint files in this experiment
+                continue
+
         config = load_config_from_dir(exp_dir)
-        experiments.append((exp_dir, config, best_ckpt))
-    
+        experiments.append((exp_dir, config, ckpt_path))
+
     return experiments
+
+
+def save_checkpoint(
+    path: str | Path,
+    model: torch.nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    epoch: Optional[int] = None,
+    best_val: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Save model checkpoint."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    checkpoint = {
+        "model_state": model.state_dict(),
+        "epoch": epoch,
+        "best_val": best_val,
+    }
+    
+    if optimizer is not None:
+        checkpoint["optimizer_state"] = optimizer.state_dict()
+    
+    if extra:
+        checkpoint["extra"] = extra
+    
+    torch.save(checkpoint, path)
+
+
+def load_checkpoint(
+    path: str | Path,
+    model: torch.nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    map_location: Optional[str | torch.device] = None,
+) -> Dict[str, Any]:
+    """Load checkpoint and restore model/optimizer."""
+    checkpoint = torch.load(path, map_location=map_location)
+    
+    model.load_state_dict(checkpoint["model_state"])
+    
+    if optimizer is not None and "optimizer_state" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    
+    return checkpoint
