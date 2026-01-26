@@ -7,11 +7,11 @@ import torch
 import numpy as np
 import argparse
 from pathlib import Path
-from PriceNewsDataset import load_dataloaders
-from Model import PriceNewsLSTMReg
-from baselines import evaluate_persistence_on_loader
-from checkpoint import load_config_from_dir
-from plotter import plot_ticker_performance, save_model_comparison, plot_model_comparison
+from core.PriceNewsDataset import load_dataloaders
+from core.Model import PriceNewsLSTMReg
+from core.baselines import evaluate_persistence_on_loader
+from core.checkpoint import load_config_from_dir
+from core.plotter import plot_ticker_performance, save_model_comparison, plot_model_comparison
 
 
 def evaluate_model(model, loader, device):

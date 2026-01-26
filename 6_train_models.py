@@ -7,11 +7,11 @@ Trains multiple LSTM configurations on all or specified tickers.
 import torch
 import argparse
 from pathlib import Path
-from PriceNewsDataset import build_and_save_datasets, load_dataloaders
-from Model import PriceNewsLSTMReg
-from train import train_model
-from checkpoint import get_all_tickers, make_save_dir
-from plotter import plot_training_history
+from core.PriceNewsDataset import build_and_save_datasets, load_dataloaders
+from core.Model import PriceNewsLSTMReg
+from core.train import train_model
+from core.checkpoint import get_all_tickers, make_save_dir
+from core.plotter import plot_training_history
 
 
 def train_with_config(

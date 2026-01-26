@@ -6,10 +6,10 @@ Evaluate all trained models and find the best one.
 import torch
 import numpy as np
 from pathlib import Path
-from PriceNewsDataset import load_dataloaders
-from Model import PriceNewsLSTMReg
-from checkpoint import find_all_experiments
-from plotter import save_model_comparison, plot_model_comparison
+from core.PriceNewsDataset import load_dataloaders
+from core.Model import PriceNewsLSTMReg
+from core.checkpoint import find_all_experiments
+from core.plotter import save_model_comparison, plot_model_comparison
 
 
 def evaluate_model(model, loader, device):
