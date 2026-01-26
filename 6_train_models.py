@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--seq_len", type=int, default=8, help="Sequence length")
     parser.add_argument("--epochs", type=int, default=100, help="Max epochs")
     parser.add_argument("--early_stopping", type=int, default=20, help="Early stopping patience")
+    # Quick mode
     parser.add_argument("--quick", action="store_true", help="Quick mode: fewer configs, fewer epochs")
     
     args = parser.parse_args()
@@ -93,7 +94,8 @@ def main():
     
     # Get tickers
     if args.tickers:
-        tickers = args.tickers
+        # Normalize to uppercase to match price file names
+        tickers = [t.upper() for t in args.tickers]
         print(f"Using specified tickers: {tickers}")
     else:
         tickers = get_all_tickers()
