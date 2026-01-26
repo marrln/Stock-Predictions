@@ -68,18 +68,42 @@ Run `3_data_clean.py` to:
 - If the article date is after the last valid market day in the file, the entry is removed
 - **Prune stock price files:** delete `.csv` files in `Stock_price/full_history` whose tickers are not present in `data_stats/news_stats.json` 
 
+**Step 4: Summarize articles**
+
+Run `4_summarize_articles.py` to:
+- Generate single-line LexRank summaries for every article and write `Stock_news/summaries.csv` (columns: `Index`, `summary`).
+
+**Step 5: Compute sentiment from summaries**
+
+Run `5_compute_sentiment.py` to:
+- Compute sentence-level FinBERT sentiment for summaries, save per-article results to `Stock_news/articles_sentiment.csv`, attach sentiment to `Stock_news/metadata.csv`, and aggregate daily sentiment by ticker to `data_stats/daily_sentiment.csv`.
+- Note: this step downloads models from Hugging Face on first run and can be accelerated by a GPU.
+
+Run steps individually:
+
 ```bash
 python3 1_stock_select.py
 python3 2_separate_news.py
 python3 3_data_clean.py
+python3 4_summarize_articles.py
+python3 5_compute_sentiment.py
 ```
 
-or run all steps in one go:
+Or run all steps (1–5) in one go with `run_data_prep.sh` (recommended after setting up the venv):
 
 ```bash
 chmod +x run_data_prep.sh
 ./run_data_prep.sh
 ```
+
+Before running the pipeline, create and activate the virtual environment to ensure required packages are installed:
+
+```bash
+./make_venv.sh
+source venv/bin/activate
+```
+
+(See `make_venv.sh` — it installs PyTorch plus project libraries such as `sumy`, `transformers`, and `nltk`.)
 
 Expected structure:
 ```
@@ -99,6 +123,31 @@ Stock_price/
 │   ├── AAPL.csv
 │   └── ...
 ```
+
+## Project file structure
+
+Top-level files and directories:
+
+- `1_stock_select.py` — Filter and prepare stock price CSVs.
+- `2_separate_news.py` — Filter and separate news dataset into metadata and articles.
+- `3_data_clean.py` — Clean news metadata, normalize dates, and prune stocks.
+- `4_summarize_articles.py` — Generate article summaries using Sumy.
+- `5_compute_sentiment.py` — Compute sentiment with HuggingFace transformers and NLTK.
+- `6_train_models.py` — Train models (uses `core` modules and datasets).
+- `7_evaluate_models.py` — Evaluate trained models on test sets.
+- `8_compare_models.py` — Compare model performance across experiments.
+- `plot_news.py`, `check_news_frequency.py` — Plotting and analysis utilities.
+- `make_venv.sh` — Create a virtualenv and install required Python packages (PyTorch + project libraries).
+- `run_data_prep.sh` — Run all data prep steps in succession.
+- `core/` — Core modules: `Model.py`, `train.py`, `PriceNewsDataset.py`, `plotter.py`, etc.
+- `data_stats/` — Generated statistics and auxiliary CSVs (e.g., `news_stats.json`, `price_stats.json`, `sp500.csv`, `valid_market_days.csv`).
+- `Stock_news/` — Raw and processed news files (`articles.csv`, `metadata.csv`, `url_metadata.json`).
+- `Stock_price/` — Raw stock price CSVs (unzipped `full_history/`).
+- `processed_data/` — Serialized datasets for training (`train_ds.pt`, `val_ds.pt`, `test_ds.pt`).
+- `experiments/` — Saved model checkpoints and experiment configs.
+- `figures/` — Generated plots and figures from analyses.
+- `README.md`, `LICENSE`— Documentation and License.
+
 
 ## Bibliography
 
