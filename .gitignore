@@ -11,6 +11,8 @@ data_cache/
 archive/
 backup/
 
+.github/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
