@@ -14,4 +14,10 @@ python3 2_separate_news.py
 echo "Step 3: Cleaning news data..."
 python3 3_data_clean.py
 
+echo "Step 4: Summarizing Articles with LexRank..."
+python3 4_summarize_articles.py
+
+echo "Step 5: Computing Sentiment from Summaries with FinBert..."
+python3 5_compute_sentiment.py
+
 echo "Data preparation complete!"
