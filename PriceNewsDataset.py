@@ -206,7 +206,14 @@ def create_sequences_from_ticker(df: pd.DataFrame, seq_len: int, feature_cols: L
             continue
         X_list.append(X_window)
         y_list.append(target_val)
-        meta_rows.append(df.loc[end, ["Date", "Ticker"]])
+        # include last observed return and close in meta so downstream tools
+        # (baselines, plots) can access raw unscaled values
+        meta_rows.append(pd.Series({
+            "Date": df.loc[end, "Date"],
+            "Ticker": df.loc[end, "Ticker"],
+            "last_return": float(df.loc[end, "return"]) if "return" in df.columns else float("nan"),
+            "last_close": float(df.loc[end, "close"]) if "close" in df.columns else float("nan"),
+        }))
 
     if len(X_list) == 0:
         return np.zeros((0, seq_len, len(feature_cols)), dtype=float), np.zeros((0,), dtype=float), pd.DataFrame()
@@ -520,6 +527,7 @@ def build_and_save_datasets(
     sentiment_fill: str = "ffill",
     target_type: str = "return",
     per_ticker_scaling: bool = False,
+    target_scaling: bool = False,
 ):
     """Build datasets from source data and save to disk.
     
@@ -563,8 +571,38 @@ def build_and_save_datasets(
     train_ds = apply_scaler_to_dataset(train_ds, scaler)
     val_ds = apply_scaler_to_dataset(val_ds, scaler)
     test_ds = apply_scaler_to_dataset(test_ds, scaler)
-    
-    # Save to disk
+
+    # Attach metadata to datasets for downstream use (feature names and target type)
+    # This makes it easy for baselines and analysis tools to infer which column is 'return'
+    feature_cols_list = meta_info.get("feature_cols") if isinstance(meta_info, dict) else None
+    if feature_cols_list is not None:
+        train_ds.feature_cols = list(feature_cols_list)
+        val_ds.feature_cols = list(feature_cols_list)
+        test_ds.feature_cols = list(feature_cols_list)
+    # Save target_type as attribute as well
+    train_ds.target_type = target_type
+    val_ds.target_type = target_type
+    test_ds.target_type = target_type
+
+    # Optional: scale targets (y) using StandardScaler fit on train targets
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    if target_scaling:
+        from sklearn.preprocessing import StandardScaler as _SS
+        y_train = train_ds.y.reshape(-1, 1)
+        y_scaler = _SS().fit(y_train)
+        # transform and replace y arrays
+        train_ds.y = y_scaler.transform(y_train).reshape(-1)
+        val_ds.y = y_scaler.transform(val_ds.y.reshape(-1, 1)).reshape(-1)
+        test_ds.y = y_scaler.transform(test_ds.y.reshape(-1, 1)).reshape(-1)
+        # save scaler to disk
+        import pickle
+        with open(save_path / "target_scaler.pkl", "wb") as f:
+            pickle.dump(y_scaler, f)
+        print("Saved target scaler to", save_path / "target_scaler.pkl")
+
+    # Save datasets to disk
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
     torch.save(train_ds, save_path / "train_ds.pt")
@@ -585,9 +623,10 @@ def load_or_build_datasets(
     target_type: str = "return",
     force_build: bool = False,
     per_ticker_scaling: bool = False,
+    target_scaling: bool = False,
 ):
     """Load pre-saved datasets from `save_dir` or build from source.
-    
+
     Convenience function that tries to load from disk first, then builds if needed.
 
     Returns: train_loader, val_loader, test_loader
@@ -598,10 +637,10 @@ def load_or_build_datasets(
         except FileNotFoundError as e:
             print(f"Could not load saved datasets: {e}")
             print("Building datasets from source...")
-    
+
     if tickers is None:
         raise ValueError("Must specify tickers when building datasets")
-    
+
     # Build and save
     build_and_save_datasets(
         tickers=tickers,
@@ -610,7 +649,8 @@ def load_or_build_datasets(
         sentiment_fill=sentiment_fill,
         target_type=target_type,
         per_ticker_scaling=per_ticker_scaling,
+        target_scaling=target_scaling,
     )
-    
+
     # Load the newly built datasets
     return load_dataloaders(save_dir, batch_size, num_workers)
