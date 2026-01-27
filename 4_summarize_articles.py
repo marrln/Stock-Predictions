@@ -23,8 +23,6 @@ from typing import Dict, List, Optional, Set, Tuple, Iterator
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
-from typing import List
-import numpy as np
 
 # Sumy imports
 from sumy.parsers.plaintext import PlaintextParser
@@ -239,13 +237,20 @@ class ArticleSummarizationProcessor:
 
         # Ensure summaries are single-line (collapse newlines and normalize whitespace)
         df_results['summary'] = df_results['summary'].astype('string').apply(sanitize_summary)
+
+        # Filter out any summaries that contain Cyrillic characters — treat as non-English
+        pre_filter_count = len(df_results)
+        non_cyrillic_mask = ~df_results['summary'].str.contains(r'[\u0400-\u04FF]', regex=True, na=False)
+        df_results = df_results.loc[non_cyrillic_mask].reset_index(drop=True)
+        dropped_non_english = pre_filter_count - len(df_results)
+        if dropped_non_english:
+            print(f"[INFO] Dropped {dropped_non_english:,} summaries containing non-English (Cyrillic) characters.")
         
         # Save to CSV efficiently
         print(f"[INFO] Saving {len(df_results):,} summaries to {output_path}")
         df_results.to_csv(output_path, index=False)
-        
+
         return df_results
-    
 
 
 def main():
