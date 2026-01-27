@@ -104,6 +104,7 @@ class ModelComparator:
                 bidirectional=model_config.get("bidirectional", False),
                 num_tickers=num_tickers,
                 ticker_emb_dim=model_config.get("ticker_emb_dim", 16),
+                expansion_factor=model_config.get("expansion_factor", 4),
             ).to(self.device)
 
             # Load weights (support different keys and fall back to non-strict load)
@@ -154,7 +155,7 @@ class ModelComparator:
         predictions, targets = get_predictions(self.model, self.test_loader, self.device)
         
         # Compute metrics
-        metrics = compute_regression_metrics(predictions, targets, include_directional=True)
+        metrics = compute_regression_metrics(predictions, targets, include_directional=True, include_r2=True, include_sharpe=True)
         
         return metrics, predictions, targets
     
