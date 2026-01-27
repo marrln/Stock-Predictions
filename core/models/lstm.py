@@ -18,6 +18,7 @@ class PriceNewsLSTMReg(nn.Module):
         pooling: How to aggregate LSTM outputs ('last', 'mean', 'max')
         num_tickers: Number of unique tickers for embedding (optional)
         ticker_emb_dim: Dimension of ticker embedding
+        expansion_factor: Factor to expand input features before LSTM
     """
     
     def __init__(
@@ -30,6 +31,7 @@ class PriceNewsLSTMReg(nn.Module):
         pooling: str = "last",
         num_tickers: Optional[int] = None,
         ticker_emb_dim: int = 16,
+        expansion_factor: int = 4,
     ) -> None:
         super().__init__()
         
@@ -39,13 +41,23 @@ class PriceNewsLSTMReg(nn.Module):
         self.dropout = dropout
         self.bidirectional = bidirectional
         self.pooling = pooling
+        self.expansion_factor = expansion_factor
         
         self.num_tickers = num_tickers
         self.ticker_emb_dim = ticker_emb_dim if num_tickers is not None else 0
         
-        # LSTM layer
+        # Feature expansion layer
+        expanded_size = input_size * expansion_factor
+        self.feature_expansion = nn.Sequential(
+            nn.Linear(input_size, expanded_size),
+            nn.BatchNorm1d(expanded_size),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.5),
+        )
+        
+        # LSTM layer (now receives expanded features)
         self.lstm = nn.LSTM(
-            input_size=input_size,
+            input_size=expanded_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -84,6 +96,8 @@ class PriceNewsLSTMReg(nn.Module):
                 nn.init.orthogonal_(param)
             elif 'bias' in name:
                 nn.init.constant_(param, 0.0)
+        # Initialize expansion layer weights if present
+        nn.init.kaiming_normal_(self.feature_expansion[0].weight, nonlinearity='relu')
     
     def forward(
         self, 
@@ -99,8 +113,14 @@ class PriceNewsLSTMReg(nn.Module):
         Returns:
             Predicted values of shape (batch_size,)
         """
-        # LSTM forward pass
-        lstm_out, _ = self.lstm(x)  # (batch_size, seq_len, hidden_size * directions)
+        batch_size, seq_len, _ = x.shape
+        # Apply feature expansion
+        x_reshaped = x.view(-1, self.input_size)  # (batch_size * seq_len, input_size)
+        x_expanded = self.feature_expansion(x_reshaped)
+        x_expanded = x_expanded.view(batch_size, seq_len, -1)
+        
+        # LSTM forward pass (now with expanded features)
+        lstm_out, _ = self.lstm(x_expanded)  # (batch_size, seq_len, hidden_size * directions)
         
         # Pooling
         if self.pooling == 'last':
