@@ -1,7 +1,7 @@
 ''' Combine daily sentiment data with full price history per ticker and write per-ticker CSVs. 
 
 Usage:
-Use after computing daily sentiment with `5_compute_daily_sentiment.py`.
+Use after computing daily sentiment with `5_compute_sentiment.py`.
 '''
 from __future__ import annotations
 
