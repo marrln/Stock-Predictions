@@ -64,6 +64,7 @@ def main():
     model_group.add_argument("--num-layers", type=int, default=2)
     model_group.add_argument("--dropout", type=float, default=0.2)
     model_group.add_argument("--pooling", choices=["last", "mean", "max"], default="last")
+    model_group.add_argument("--expansion-factor", type=int, default=4, help="Feature expansion factor applied to input features before LSTM")
     
     # Training arguments
     train_group = parser.add_argument_group("Training")
@@ -97,7 +98,7 @@ def main():
     
     # Show ticker statistics
     if tickers:
-        stats = get_ticker_stats(tickers=tickers)
+        stats = get_ticker_stats(tickers=tickers, seq_len=args.seq_len)
         print("\nTicker statistics:")
         print(stats[["num_days", "avg_volume", "possible_sequences"]].to_string())
     
@@ -118,6 +119,7 @@ def main():
                 num_layers=args.num_layers,
                 dropout=args.dropout,
                 pooling=args.pooling,
+                expansion_factor=args.expansion_factor,
                 lr=args.lr,
                 batch_size=args.batch_size,
                 epochs=args.epochs,
@@ -169,7 +171,14 @@ def main():
         print("\nEvaluation results:")
         for loader_type in ["train", "val", "test"]:
             metrics = trainer.evaluate(loader_type)
-            print(f"{loader_type.upper()}: Loss={metrics['loss']:.4f}, "f"MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}")
+            dir_acc = metrics.get('dir_acc', float('nan'))
+            r2 = metrics.get('r2', float('nan'))
+            sharpe = metrics.get('sharpe_pred', float('nan'))
+            print(
+                f"{loader_type.upper()}: Loss={metrics['loss']:.4f}, "
+                f"MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}, "
+                f"DirAcc={dir_acc:.2%}, R2={r2:.4f}, Sharpe={sharpe:.4f}"
+            )
         
         print(f"\nModel saved to: {result.checkpoint_path}")
     print("\nTraining completed!")
