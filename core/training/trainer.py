@@ -161,7 +161,7 @@ def evaluate(
     
     # Compute metrics
     avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
-    metrics = compute_regression_metrics(all_preds, all_targets)
+    metrics = compute_regression_metrics(all_preds, all_targets, include_r2=True, include_sharpe=True)
     
     return avg_loss, metrics
 
@@ -269,7 +269,7 @@ def compute_unscaled_metrics(
             inv_targets = targets.ravel()
     
     # Compute metrics on unscaled values
-    return compute_regression_metrics(inv_preds, inv_targets)
+    return compute_regression_metrics(inv_preds, inv_targets, include_r2=True, include_sharpe=True)
 
 
 def train_model(
@@ -369,6 +369,8 @@ def train_model(
         "val_mae": [],
         "val_rmse": [],
         "val_dir_acc": [],
+        "val_r2": [],
+        "val_sharpe_pred": [],
         "lr": [],
         "grad_norm": [],
     }
@@ -399,15 +401,19 @@ def train_model(
         history["val_loss"].append(val_loss)
         history["grad_norm"].append(avg_grad_norm)
         
-        # Use unscaled metrics if available
+        # Use unscaled metrics if available (prefer unscaled for reporting)
         if unscaled_metrics is not None:
             history["val_mae"].append(unscaled_metrics["mae"])
             history["val_rmse"].append(unscaled_metrics["rmse"])
             history["val_dir_acc"].append(unscaled_metrics.get("dir_acc", 0.0))
+            history["val_r2"].append(unscaled_metrics.get("r2", 0.0))
+            history["val_sharpe_pred"].append(unscaled_metrics.get("sharpe_pred", 0.0))
         else:
             history["val_mae"].append(val_metrics["mae"])
             history["val_rmse"].append(val_metrics["rmse"])
             history["val_dir_acc"].append(val_metrics.get("dir_acc", 0.0))
+            history["val_r2"].append(val_metrics.get("r2", 0.0))
+            history["val_sharpe_pred"].append(val_metrics.get("sharpe_pred", 0.0))
         
         # Update learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -445,6 +451,7 @@ def train_model(
                 "bidirectional": model.bidirectional,
                 "num_tickers": model.num_tickers,
                 "ticker_emb_dim": model.ticker_emb_dim,
+                "expansion_factor": getattr(model, "expansion_factor", 1),
             }
             
             if unscaled_metrics is not None:
@@ -475,6 +482,8 @@ def train_model(
                 f"Val Loss: {val_loss:.5f} | "
                 f"Val MAE: {history['val_mae'][-1]:.5f} | "
                 f"Val RMSE: {history['val_rmse'][-1]:.5f} | "
+                f"Val R2: {history.get('val_r2', [0.0])[-1]:.4f} | "
+                f"Val Sharpe: {history.get('val_sharpe_pred', [0.0])[-1]:.4f} | "
                 f"LR: {current_lr:.2e}"
             )
             print(log_msg)
@@ -501,6 +510,7 @@ def train_model(
         "bidirectional": model.bidirectional,
         "num_tickers": model.num_tickers,
         "ticker_emb_dim": model.ticker_emb_dim,
+        "expansion_factor": getattr(model, "expansion_factor", 1),
     }
     
     if y_scaler is not None:
@@ -555,7 +565,12 @@ def evaluate_on_loader(
     device: Optional[torch.device] = None,
     loss_fn: Optional[nn.Module] = None,
 ) -> Dict[str, float]:
-    """Convenience function to evaluate model on any loader."""
+    """Convenience function to evaluate model on any loader.
+
+    If dataset has a `target_scaler` attached (per-ticker or single), compute
+    and return metrics in the original (unscaled) target space for better
+    interpretability (mae/rmse/dir_acc will reflect unscaled values).
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -563,6 +578,28 @@ def evaluate_on_loader(
         loss_fn = nn.MSELoss()
     
     loss, metrics = evaluate(model, loader, loss_fn, device)
+
+    # If dataset has a target scaler attached, compute unscaled metrics and
+    # override reported mae/rmse/dir_acc with unscaled values (keep originals
+    # as *_scaled keys)
+    try:
+        dataset = loader.dataset
+        y_scaler = getattr(dataset, "target_scaler", None)
+        if y_scaler is not None:
+            unscaled = compute_unscaled_metrics(model, loader, device, y_scaler)
+            # Preserve scaled values
+            metrics["mae_scaled"] = metrics.get("mae")
+            metrics["rmse_scaled"] = metrics.get("rmse")
+            metrics["mae"] = unscaled.get("mae", metrics.get("mae"))
+            metrics["rmse"] = unscaled.get("rmse", metrics.get("rmse"))
+            if "dir_acc" in unscaled:
+                metrics["dir_acc"] = unscaled.get("dir_acc")
+            # Expose unscaled metrics explicitly
+            metrics["mae_unscaled"] = metrics["mae"]
+            metrics["rmse_unscaled"] = metrics["rmse"]
+    except Exception:
+        # Best-effort: if unscaled computation fails, keep scaled metrics
+        pass
     
     return {"loss": loss, **metrics}
 

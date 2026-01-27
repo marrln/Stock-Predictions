@@ -9,9 +9,15 @@ def compute_regression_metrics(
     predictions: np.ndarray,
     targets: np.ndarray,
     include_directional: bool = True,
-    include_r2: bool = False,
+    include_r2: bool = True,
+    include_sharpe: bool = True,
 ) -> Dict[str, float]:
-    """Compute regression metrics with more options."""
+    """Compute regression metrics with more options.
+
+    Additional metrics:
+      - r2: Coefficient of determination when include_r2=True
+      - sharpe_pred / sharpe_true: mean/std for predictions and targets when include_sharpe=True
+    """
     predictions = np.asarray(predictions).ravel()
     targets = np.asarray(targets).ravel()
     
@@ -51,5 +57,16 @@ def compute_regression_metrics(
         ss_residual = np.sum(squared_errors)
         r2 = 1 - (ss_residual / ss_total) if ss_total > 0 else 0.0
         metrics["r2"] = float(r2)
+    
+    # Sharpe-like ratios (non-annualized): pred mean / pred std, target mean / target std
+    if include_sharpe:
+        def _sharpe(arr: np.ndarray) -> float:
+            arr = np.asarray(arr).ravel()
+            std = np.std(arr)
+            if std == 0 or np.isnan(std):
+                return 0.0
+            return float(np.mean(arr) / std)
+        metrics["sharpe_pred"] = _sharpe(predictions)
+        metrics["sharpe_true"] = _sharpe(targets)
     
     return metrics
