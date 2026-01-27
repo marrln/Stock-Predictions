@@ -11,15 +11,18 @@ import torch.nn as nn
 @dataclass
 class ExperimentConfig:
     """Configuration for a training experiment."""
-    # Data settings
     tickers: List[str] = field(default_factory=list)
-    seq_len: int = 8
+    seq_len: int = 30
     target_type: str = "return"
     sentiment_fill: str = "ffill"
     batch_size: int = 64
     target_scaling: bool = True
     
-    # Model architecture
+    train_days: int = 750
+    val_days: int = 125
+    test_days: Optional[int] = 125
+    step_days: int = 125
+    
     hidden_size: int = 128
     num_layers: int = 2
     dropout: float = 0.2
@@ -29,7 +32,6 @@ class ExperimentConfig:
     ticker_emb_dim: int = 16
     expansion_factor: int = 4
     
-    # Training hyperparameters
     optimizer: str = "adam"
     lr: float = 1e-3
     weight_decay: float = 0.0
@@ -39,13 +41,11 @@ class ExperimentConfig:
     early_stopping_patience: int = 20
     grad_clip: float = 1.0
     
-    # Scheduler
     scheduler_type: str = "plateau"
     scheduler_factor: float = 0.5
     scheduler_patience: int = 5
     scheduler_min_lr: float = 1e-6
     
-    # Experiment management
     experiment_name: Optional[str] = None
     save_dir: str = "experiments"
     data_dir: str = "processed_data"

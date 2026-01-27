@@ -71,36 +71,36 @@ def load_config_from_dir(exp_dir: Path) -> Dict[str, Any]:
 
 def find_all_experiments(base_dir: str = "experiments") -> List[Tuple[Path, Dict, Path]]:
     """Find all experiment directories with checkpoints.
-    
+
+    This searches recursively for checkpoint files (e.g., `best.pt`) so it will
+    discover experiments organized under fold directories (e.g., `fold_0/<exp>/best.pt`).
+
     Returns:
         List of (exp_dir, config, best_ckpt_path) tuples
     """
     base_path = Path(base_dir)
     if not base_path.exists():
         return []
-    
+
     experiments = []
-    for exp_dir in base_path.iterdir():
-        if not exp_dir.is_dir() or exp_dir.name == "comparison":
+
+    # Search recursively for best.pt, last.pt or any .pt file
+    ckpt_candidates = list(base_path.rglob("best.pt"))
+    # If no explicit best.pt files, look for last.pt
+    if not ckpt_candidates:
+        ckpt_candidates = list(base_path.rglob("last.pt"))
+    # If still none, fall back to any .pt files
+    if not ckpt_candidates:
+        ckpt_candidates = list(base_path.rglob("*.pt"))
+
+    # Deduplicate and sort
+    ckpt_candidates = sorted(set(ckpt_candidates))
+
+    for ckpt_path in ckpt_candidates:
+        exp_dir = ckpt_path.parent
+        # Skip comparison output dir
+        if "comparison" in exp_dir.parts:
             continue
-
-        # Prefer explicit best checkpoint, but fall back to last.pt or any .pt file
-        best_ckpt = exp_dir / "best.pt"
-        last_ckpt = exp_dir / "last.pt"
-        ckpt_path = None
-
-        if best_ckpt.exists():
-            ckpt_path = best_ckpt
-        elif last_ckpt.exists():
-            ckpt_path = last_ckpt
-        else:
-            # Fall back to first available .pt file (if any)
-            pts = list(exp_dir.glob("*.pt"))
-            if pts:
-                ckpt_path = sorted(pts)[0]
-            else:
-                # no checkpoint files in this experiment
-                continue
 
         config = load_config_from_dir(exp_dir)
         experiments.append((exp_dir, config, ckpt_path))

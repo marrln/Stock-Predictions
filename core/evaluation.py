@@ -24,31 +24,41 @@ class ModelEvaluator:
         self, 
         data_dir: str | Path,
         batch_size: int = 64,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        fold_idx: int = 0
     ):
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(self.device)
+        self.fold_idx = fold_idx
         
-        # Will be set during setup
         self.test_loader = None
         self.input_size = None
         
     def setup(self):
-        """Setup data loader."""
-        from .data.loaders import load_dataloaders
+        """Setup data loader for rolling folds."""
+        from .data.loaders import load_rolling_folds
         
         try:
-            _, _, test_loader = load_dataloaders(
+            folds = load_rolling_folds(
                 str(self.data_dir), 
                 self.batch_size, 
                 num_workers=0
             )
+            
+            if self.fold_idx >= len(folds):
+                raise ValueError(f"Fold index {self.fold_idx} out of range (max {len(folds)-1})")
+            
+            _, _, test_loader = folds[self.fold_idx]
+            
+            if test_loader is None:
+                raise RuntimeError(f"Fold {self.fold_idx} has no test set")
+            
             self.test_loader = test_loader
             self.input_size = test_loader.dataset.X.shape[-1]
             
-            print(f"Loaded test data: {len(test_loader.dataset)} samples")
+            print(f"Loaded fold {self.fold_idx} test data: {len(test_loader.dataset)} samples")
             print(f"Input size: {self.input_size}")
             
         except FileNotFoundError:
@@ -118,7 +128,21 @@ class ModelEvaluator:
         
         # Fallback: compute metrics on raw output (likely scaled)
         predictions, targets = get_predictions(model, self.test_loader, self.device)
-        metrics = compute_regression_metrics(predictions, targets, include_directional=True, include_r2=True, include_sharpe=True)
+
+        # Try to get ticker ids from dataset meta for per-ticker breakdown
+        ds = self.test_loader.dataset
+        ticker_ids = None
+        if getattr(ds, 'meta', None) is not None and 'Ticker' in ds.meta.columns:
+            ticker_ids = ds.meta['Ticker'].astype(str).values
+
+        metrics = compute_regression_metrics(
+            predictions,
+            targets,
+            include_directional=True,
+            include_r2=True,
+            include_sharpe=True,
+            ticker_ids=ticker_ids,
+        )
         return metrics
     
     def evaluate_all_experiments(
@@ -167,8 +191,20 @@ class ModelEvaluator:
                 print(f"  Test MAE: {metrics['mae']:.6f}")
                 print(f"  Test RMSE: {metrics['rmse']:.6f}")
                 print(f"  Directional Accuracy: {metrics.get('dir_acc', 0.0):.2%}")
+                # Confusion matrix
+                if all(k in metrics for k in ("conf_TP", "conf_TN", "conf_FP", "conf_FN")):
+                    print("  Confusion (TP, TN, FP, FN):", metrics['conf_TP'], metrics['conf_TN'], metrics['conf_FP'], metrics['conf_FN'])
+                # Thresholded directional accuracy
+                if 'dir_acc_thresh' in metrics:
+                    print(f"  Thresholded DirAcc (|target|>thr): {metrics.get('dir_acc_thresh', 0.0):.2%} (n={metrics.get('dir_acc_thresh_n',0)})")
                 print(f"  R2: {metrics.get('r2', 0.0):.6f}")
                 print(f"  Sharpe (pred): {metrics.get('sharpe_pred', 0.0):.6f}")
+
+                # Per-ticker brief summary
+                if 'per_ticker' in metrics and isinstance(metrics['per_ticker'], dict):
+                    print("  Per-ticker summary (MAE / DirAcc):")
+                    for t, sm in metrics['per_ticker'].items():
+                        print(f"    {t}: MAE={sm.get('mae',float('nan')):.4f}, DirAcc={sm.get('dir_acc',float('nan')):.2%}")
                 print()
                 
             except Exception as e:

@@ -40,14 +40,13 @@ class ModelComparator:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(self.device)
         
-        # Will be set during setup
         self.test_loader = None
         self.model = None
         self.config = {}
+        self.target_type = "return"
         
     def setup(self):
         """Setup data and model."""
-        # Load data
         print(f"Loading data from {self.data_dir}...")
         try:
             _, _, self.test_loader = load_dataloaders(
@@ -56,10 +55,14 @@ class ModelComparator:
                 num_workers=0
             )
             print(f"Test samples: {len(self.test_loader.dataset)}")
+            
+            dataset = self.test_loader.dataset
+            self.target_type = getattr(dataset, 'target_type', 'return')
+            print(f"Target type: {self.target_type}")
+            
         except Exception as e:
             raise RuntimeError(f"Failed to load data: {e}")
         
-        # Load model
         print(f"Loading model from {self.model_path}...")
         self._load_model()
     
@@ -463,7 +466,8 @@ def main():
                         "Persistence Baseline": data['baseline_predictions']
                     },
                     save_path=output_dir / f"{args.ticker}_comparison.png",
-                    show=False
+                    show=False,
+                    target_type=comparator.target_type
                 )
                 print(f"   Plot saved to {output_dir / f'{args.ticker}_comparison.png'}")
         

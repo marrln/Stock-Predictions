@@ -34,6 +34,8 @@ def main():
                        help="Dataset directory used for training")
     parser.add_argument("--batch-size", type=int, default=64,
                        help="Batch size for evaluation")
+    parser.add_argument("--fold-idx", type=int, default=0,
+                       help="Fold index to evaluate (for rolling CV)")
     
     # Experiment arguments
     parser.add_argument("--experiments-dir", type=str, default="experiments",

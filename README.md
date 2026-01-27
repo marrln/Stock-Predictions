@@ -136,9 +136,10 @@ Top-level files and directories:
 - `3_data_clean.py` — Clean news metadata, normalize dates, and prune stocks.
 - `4_summarize_articles.py` — Generate article summaries using Sumy.
 - `5_compute_sentiment.py` — Compute sentiment with HuggingFace transformers and NLTK.
-- `6_train_models.py` — Train models (uses `core` modules and datasets).
-- `7_evaluate_models.py` — Evaluate trained models on test sets.
-- `8_compare_models.py` — Compare model performance across experiments.
+- `6_train_models.py` — Train models using rolling window cross-validation (uses `core` modules and datasets).
+- `7_evaluate_models.py` — Evaluate trained models on test sets (fold-aware).
+- `8_compare_models.py` — Compare model performance with baselines (supports price and return targets).
+- `9_visualize_rolling_folds.py` — Visualize predictions across all rolling folds with timeline view.
 - `plot_news.py`, `check_news_frequency.py` — Plotting and analysis utilities.
 - `make_venv.sh` — Create a virtualenv and install required Python packages (PyTorch + project libraries).
 - `run_data_prep.sh` — Run all data prep steps in succession.
@@ -146,10 +147,82 @@ Top-level files and directories:
 - `data_stats/` — Generated statistics and auxiliary CSVs (e.g., `news_stats.json`, `price_stats.json`, `sp500.csv`, `valid_market_days.csv`).
 - `Stock_news/` — Raw and processed news files (`articles.csv`, `metadata.csv`, `url_metadata.json`).
 - `Stock_price/` — Raw stock price CSVs (unzipped `full_history/`).
-- `processed_data/` — Serialized datasets for training (`train_ds.pt`, `val_ds.pt`, `test_ds.pt`).
-- `experiments/` — Saved model checkpoints and experiment configs.
+- `processed_data/` — Serialized rolling fold datasets for training (organized by fold directories).
+- `experiments/` — Saved model checkpoints and experiment configs (organized by fold).
 - `figures/` — Generated plots and figures from analyses.
 - `README.md`, `LICENSE`— Documentation and License.
+
+## Rolling Window Cross-Validation
+
+This project uses a rolling window (walk-forward) approach for time series cross-validation:
+
+**Key Parameters:**
+- `train_days`: Training window size (default: 750 days, ~3 years)
+- `val_days`: Validation window size (default: 125 days, ~6 months)
+- `test_days`: Test window size (default: 125 days, ~6 months, or None to disable)
+- `step_days`: Step size between folds (default: 125 days)
+- `seq_len`: Sequence length (default: 30 days)
+
+**Fold Layout:**
+```
+|---- train ----|-- embargo --|---- val ----|-- embargo --|---- test ----|
+```
+
+**Embargo periods** (equal to `seq_len`) prevent data leakage between splits.
+
+**Usage Examples:**
+
+Train with default rolling parameters:
+```bash
+python3 6_train_models.py --tickers AAPL MSFT GOOGL
+```
+
+Customize rolling window:
+```bash
+python3 6_train_models.py --tickers AAPL MSFT GOOGL \
+  --train-days 1000 --val-days 125 --test-days 125 --step-days 125
+```
+
+Disable test window for pure rolling CV:
+```bash
+python3 6_train_models.py --tickers AAPL MSFT GOOGL --no-test
+```
+
+Evaluate a specific fold:
+```bash
+python3 7_evaluate_models.py --data-dir processed_data/3tickers_seq30_rolling \
+  --fold-idx 0
+```
+
+## Visualization
+
+The project includes enhanced plotting utilities for rolling window analysis:
+
+**Visualize rolling fold predictions:**
+```bash
+python3 9_visualize_rolling_folds.py \
+  --experiment experiments/rolling_example \
+  --data-dir processed_data/3tickers_seq30_rolling \
+  --ticker AAPL \
+  --split test \
+  --all-metrics
+```
+
+**Features:**
+- Timeline view showing all folds with colored regions (train/val/test)
+- Different plot styles for price vs. return targets:
+  - **Price targets**: Line plot showing actual vs. predicted prices
+  - **Return targets**: Scatter plot with zero-line reference showing return movements
+- Fold-wise metric comparison across all folds
+- Statistical summaries (mean, std, min, max) for each metric
+
+**Compare with baselines:**
+```bash
+python3 8_compare_models.py \
+  --model experiments/rolling_example/fold_0/best.pt \
+  --data-dir processed_data/3tickers_seq30_rolling \
+  --ticker AAPL
+```
 
 
 ## Bibliography

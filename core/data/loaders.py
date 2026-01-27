@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from .dataset import TimeSeriesDataset
 from .preprocessing import (
     build_dataset_all_tickers,
-    split_time_based,
+    split_time_based_rolling,
     compute_scalers_from_train,
     apply_scaler_to_dataset,
 )
@@ -100,7 +100,7 @@ def load_dataloaders(
     batch_size: int = 64,
     num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Load pre-saved datasets from disk and return dataloaders."""
+    """Load pre-saved datasets from disk and return dataloaders (DEPRECATED - for single fold only)."""
     save_path = Path(save_dir)
     if not save_path.exists():
         raise FileNotFoundError(f"Dataset directory not found: {save_dir}")
@@ -117,14 +117,63 @@ def load_dataloaders(
     print(f"  Val: {len(val_ds)} samples")
     print(f"  Test: {len(test_ds)} samples")
     
-    # Backfill TickerIdx mapping for older datasets
     _backfill_ticker_idx(train_ds, val_ds, test_ds)
 
-    # Normalize meta columns for backward compatibility (ensure lowercase aliases exist)
     for ds in (train_ds, val_ds, test_ds):
         _ensure_meta_aliases(ds)
 
     return make_dataloaders(train_ds, val_ds, test_ds, batch_size, num_workers)
+
+
+def load_rolling_folds(
+    save_dir: str,
+    batch_size: int = 64,
+    num_workers: int = 0,
+) -> List[Tuple[DataLoader, DataLoader, Optional[DataLoader]]]:
+    """Load rolling folds from disk and return list of dataloader tuples."""
+    save_path = Path(save_dir)
+    if not save_path.exists():
+        raise FileNotFoundError(f"Dataset directory not found: {save_dir}")
+    
+    fold_info_path = save_path / "fold_info.pkl"
+    if not fold_info_path.exists():
+        raise FileNotFoundError(f"fold_info.pkl not found in {save_dir}")
+    
+    with open(fold_info_path, "rb") as f:
+        fold_info = pickle.load(f)
+    
+    num_folds = fold_info["num_folds"]
+    fold_loaders = []
+    
+    for fold_idx in range(num_folds):
+        fold_dir = save_path / f"fold_{fold_idx}"
+        if not fold_dir.exists():
+            raise FileNotFoundError(f"Fold directory not found: {fold_dir}")
+        
+        train_ds = torch.load(fold_dir / "train_ds.pt", weights_only=False)
+        val_ds = torch.load(fold_dir / "val_ds.pt", weights_only=False)
+        
+        test_path = fold_dir / "test_ds.pt"
+        test_ds = torch.load(test_path, weights_only=False) if test_path.exists() else None
+        
+        _backfill_ticker_idx(*([train_ds, val_ds, test_ds] if test_ds else [train_ds, val_ds]))
+        for ds in [train_ds, val_ds] + ([test_ds] if test_ds else []):
+            _ensure_meta_aliases(ds)
+        
+        if test_ds is not None:
+            train_loader, val_loader, test_loader = make_dataloaders(
+                train_ds, val_ds, test_ds, batch_size, num_workers
+            )
+        else:
+            train_loader, val_loader, _ = make_dataloaders(
+                train_ds, val_ds, train_ds, batch_size, num_workers
+            )
+            test_loader = None
+        
+        fold_loaders.append((train_loader, val_loader, test_loader))
+    
+    print(f"Loaded {num_folds} folds from {save_path}")
+    return fold_loaders
 
 
 def _backfill_ticker_idx(*datasets: TimeSeriesDataset):
@@ -166,21 +215,21 @@ def _ensure_meta_aliases(ds: TimeSeriesDataset):
         ds.meta['TickerIdx'] = ds.meta['tickeridx']
 
 
-def build_and_save_datasets(
+def build_and_save_rolling_folds(
     tickers: List[str],
     save_dir: str,
-    seq_len: int = 8,
+    seq_len: int = 30,
     sentiment_fill: str = "ffill",
     target_type: str = "return",
     target_scaling: bool = True,
-    train_val_years: Tuple[int, int] = (2018, 2021),
-    test_years: Tuple[int, int] = (2022, 2023),
-    val_duration_months: int = 12,
-) -> Tuple[TimeSeriesDataset, TimeSeriesDataset, TimeSeriesDataset]:
-    """Build datasets from source data and save to disk."""
-    print(f"Building datasets for {len(tickers)} tickers")
+    train_days: int = 750,
+    val_days: int = 125,
+    test_days: Optional[int] = 125,
+    step_days: int = 125,
+) -> List[Tuple[TimeSeriesDataset, TimeSeriesDataset, Optional[TimeSeriesDataset]]]:
+    """Build rolling fold datasets from source data and save to disk."""
+    print(f"Building rolling fold datasets for {len(tickers)} tickers")
     
-    # Build raw dataset
     ds_dict, info, meta = build_dataset_all_tickers(
         tickers=tickers,
         seq_len=seq_len,
@@ -194,65 +243,91 @@ def build_and_save_datasets(
     X_all, y_all = ds_dict["X"], ds_dict["y"]
     print(f"Total samples: {len(X_all)}")
     
-    # Split temporally
-    train_ds, val_ds, test_ds = split_time_based(
-        meta, X_all, y_all, 
-        train_val_years=train_val_years,
-        test_years=test_years,
-        val_duration_months=val_duration_months,
+    # Diagnostic: compute number of unique trading days and expected folds (date-based)
+    unique_dates = meta['Date'].dt.normalize().drop_duplicates().sort_values().reset_index(drop=True)
+    D = len(unique_dates)
+    # Compute expected folds using the same logic as splitter
+    window_len = train_days + seq_len + val_days
+    if test_days is not None:
+        window_len += seq_len + test_days
+    expected_folds = 0
+    if D > window_len:
+        expected_folds = (D - window_len) // step_days + 1
+    print(f"Unique trading days: {D}, expected folds (approx): {expected_folds}")
+
+    folds = split_time_based_rolling(
+        meta, X_all, y_all,
+        train_days=train_days,
+        val_days=val_days,
+        test_days=test_days,
+        seq_len=seq_len,
+        step_days=step_days,
     )
-    print(f"Split: Train={len(train_ds)}, Val={len(val_ds)}, Test={len(test_ds)}")
     
-    # Scale features (per-ticker)
-    scaler = compute_scalers_from_train(train_ds, per_ticker=True)
+    print(f"Created {len(folds)} rolling folds")
     
-    train_ds = apply_scaler_to_dataset(train_ds, scaler)
-    val_ds = apply_scaler_to_dataset(val_ds, scaler)
-    test_ds = apply_scaler_to_dataset(test_ds, scaler)
-    
-    # Add metadata
+    processed_folds = []
     feature_cols = info.get("feature_cols", [])
-    for ds in [train_ds, val_ds, test_ds]:
-        ds.feature_cols = feature_cols
-        ds.target_type = target_type
     
-    # Scale targets if requested
-    y_scalers = None
-    if target_scaling:
-        y_scalers = _scale_targets_per_ticker(train_ds, val_ds, test_ds)
+    for fold_idx, (train_ds, val_ds, test_ds) in enumerate(folds):
+        scaler = compute_scalers_from_train(train_ds, per_ticker=True)
+        
+        train_ds = apply_scaler_to_dataset(train_ds, scaler)
+        val_ds = apply_scaler_to_dataset(val_ds, scaler)
+        if test_ds is not None:
+            test_ds = apply_scaler_to_dataset(test_ds, scaler)
+        
+        for ds in [train_ds, val_ds] + ([test_ds] if test_ds else []):
+            ds.feature_cols = feature_cols
+            ds.target_type = target_type
+        
+        if target_scaling:
+            if test_ds is not None:
+                _scale_targets_per_ticker(train_ds, val_ds, test_ds)
+            else:
+                _scale_targets_per_ticker(train_ds, val_ds)
+        
+        _add_ticker_indices(*([train_ds, val_ds, test_ds] if test_ds else [train_ds, val_ds]))
+        
+        processed_folds.append((train_ds, val_ds, test_ds))
     
-    # Add ticker indices
-    _add_ticker_indices(train_ds, val_ds, test_ds)
-    
-    # Save to disk
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
     
-    torch.save(train_ds, save_path / "train_ds.pt")
-    torch.save(val_ds, save_path / "val_ds.pt")
-    torch.save(test_ds, save_path / "test_ds.pt")
+    for fold_idx, (train_ds, val_ds, test_ds) in enumerate(processed_folds):
+        fold_dir = save_path / f"fold_{fold_idx}"
+        fold_dir.mkdir(exist_ok=True)
+        
+        torch.save(train_ds, fold_dir / "train_ds.pt")
+        torch.save(val_ds, fold_dir / "val_ds.pt")
+        if test_ds is not None:
+            torch.save(test_ds, fold_dir / "test_ds.pt")
     
-    if y_scalers:
-        with open(save_path / "target_scaler.pkl", "wb") as f:
-            pickle.dump(y_scalers, f)
-        print(f"Saved per-ticker target scalers")
+    with open(save_path / "fold_info.pkl", "wb") as f:
+        pickle.dump({
+            "num_folds": len(processed_folds),
+            "train_days": train_days,
+            "val_days": val_days,
+            "test_days": test_days,
+            "step_days": step_days,
+            "seq_len": seq_len,
+            "feature_cols": feature_cols,
+        }, f)
     
-    print(f"Saved datasets to {save_path}")
+    print(f"Saved {len(processed_folds)} folds to {save_path}")
     
-    return train_ds, val_ds, test_ds
+    return processed_folds
 
 
 def _scale_targets_per_ticker(
     train_ds: TimeSeriesDataset,
-    val_ds: TimeSeriesDataset,
-    test_ds: TimeSeriesDataset
+    *other_datasets: TimeSeriesDataset
 ) -> Dict[str, Any]:
     """Scale targets per ticker using StandardScaler."""
     from sklearn.preprocessing import StandardScaler
     
     y_scalers = {}
     
-    # Fit scalers on train targets per ticker
     for ticker in sorted(train_ds.meta['Ticker'].unique()):
         indices = train_ds.meta.index[train_ds.meta['Ticker'] == ticker].tolist()
         if not indices:
@@ -262,22 +337,10 @@ def _scale_targets_per_ticker(
         scaler = StandardScaler().fit(y_t)
         y_scalers[ticker] = scaler
         
-        # Debug: print pre/post scaling stats for this ticker
-        try:
-            print(f"Target scaling - {ticker}: train mean={y_t.mean():.6f}, std={y_t.std():.6f}")
-        except Exception:
-            pass
-        
-        # Transform train targets
         train_ds.y[indices] = scaler.transform(y_t).reshape(-1)
-        try:
-            print(f"Target scaling - {ticker}: scaled train mean={train_ds.y[indices].mean():.6f}, std={train_ds.y[indices].std():.6f}")
-        except Exception:
-            pass
     
-    # Transform validation and test targets
-    for ds in [val_ds, test_ds]:
-        if ds.meta is None:
+    for ds in other_datasets:
+        if ds is None or ds.meta is None:
             continue
         
         scaled_y = ds.y.copy()
@@ -288,9 +351,9 @@ def _scale_targets_per_ticker(
         
         ds.y = scaled_y
     
-    # Attach scalers to datasets
-    for ds in [train_ds, val_ds, test_ds]:
-        ds.target_scaler = y_scalers
+    for ds in [train_ds] + list(other_datasets):
+        if ds is not None:
+            ds.target_scaler = y_scalers
     
     return y_scalers
 
@@ -312,36 +375,42 @@ def _add_ticker_indices(*datasets: TimeSeriesDataset):
             ds.ticker_to_idx = ticker_to_idx
 
 
-def load_or_build_datasets(
+def load_or_build_rolling_folds(
     tickers: Optional[List[str]] = None,
-    seq_len: int = 8,
+    seq_len: int = 30,
     batch_size: int = 64,
     num_workers: int = 0,
-    save_dir: str = "processed_data/small_ams",
+    save_dir: str = "processed_data/rolling",
     sentiment_fill: str = "ffill",
     target_type: str = "return",
     force_build: bool = False,
     target_scaling: bool = True,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Load pre-saved datasets or build from source."""
+    train_days: int = 750,
+    val_days: int = 125,
+    test_days: Optional[int] = 125,
+    step_days: int = 125,
+) -> List[Tuple[DataLoader, DataLoader, Optional[DataLoader]]]:
+    """Load pre-saved rolling folds or build from source."""
     if not force_build:
         try:
-            return load_dataloaders(save_dir, batch_size, num_workers)
+            return load_rolling_folds(save_dir, batch_size, num_workers)
         except FileNotFoundError:
-            print("Saved datasets not found. Building from source...")
+            print("Saved folds not found. Building from source...")
     
     if tickers is None:
         raise ValueError("Must specify tickers when building datasets")
     
-    # Build and save
-    build_and_save_datasets(
+    build_and_save_rolling_folds(
         tickers=tickers,
         save_dir=save_dir,
         seq_len=seq_len,
         sentiment_fill=sentiment_fill,
         target_type=target_type,
         target_scaling=target_scaling,
+        train_days=train_days,
+        val_days=val_days,
+        test_days=test_days,
+        step_days=step_days,
     )
     
-    # Load the newly built datasets
-    return load_dataloaders(save_dir, batch_size, num_workers)
+    return load_rolling_folds(save_dir, batch_size, num_workers)

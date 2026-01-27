@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from .data.loaders import load_or_build_datasets, build_and_save_datasets
+from .data.loaders import load_or_build_rolling_folds
 from .models.lstm import PriceNewsLSTMReg
 from .experiment import ExperimentConfig, ExperimentResult
 from .training.trainer import train_model
@@ -19,17 +19,14 @@ from .utils.plotting import plot_training_history
 
 
 class LSTMTrainer:
-    """Simplified trainer for LSTM models."""
+    """Simplified trainer for LSTM models with rolling window CV."""
     
     def __init__(self, config: ExperimentConfig, device: Optional[str] = None):
         self.config = config
         self.device = self._setup_device(device)
         self.loss_fn = config.get_loss_function()
         
-        # Will be set during setup
-        self.train_loader = None
-        self.val_loader = None
-        self.test_loader = None
+        self.folds = None
         self.model = None
         
     def _setup_device(self, device: Optional[str]) -> torch.device:
@@ -39,14 +36,13 @@ class LSTMTrainer:
         return torch.device(device)
     
     def setup_data(self, force_rebuild: bool = False) -> None:
-        """Setup data loaders."""
-        # Create data directory name
-        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}"
+        """Setup rolling fold data loaders."""
+        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}_rolling"
         data_dir = Path(self.config.data_dir) / data_dir_name
         
-        print(f"Setting up data from {data_dir}")
+        print(f"Setting up rolling folds from {data_dir}")
         
-        self.train_loader, self.val_loader, self.test_loader = load_or_build_datasets(
+        self.folds = load_or_build_rolling_folds(
             tickers=self.config.tickers,
             seq_len=self.config.seq_len,
             batch_size=self.config.batch_size,
@@ -55,59 +51,28 @@ class LSTMTrainer:
             target_type=self.config.target_type,
             force_build=force_rebuild,
             target_scaling=self.config.target_scaling,
+            train_days=self.config.train_days,
+            val_days=self.config.val_days,
+            test_days=self.config.test_days,
+            step_days=self.config.step_days,
         )
         
-        print(f"Data loaded: Train={len(self.train_loader.dataset)}, "
-              f"Val={len(self.val_loader.dataset)}, Test={len(self.test_loader.dataset)}")
-
-        # DEBUG: print target statistics to catch scaling issues
-        try:
-            tr_y = self.train_loader.dataset.y
-            va_y = self.val_loader.dataset.y
-            te_y = self.test_loader.dataset.y
-            print(f"Target stats - Train: mean={tr_y.mean():.6f}, std={tr_y.std():.6f}")
-            print(f"Target stats - Val: mean={va_y.mean():.6f}, std={va_y.std():.6f}")
-            print(f"Target stats - Test: mean={te_y.mean():.6f}, std={te_y.std():.6f}")
-            print(f"Sample targets - Train: {tr_y[:5]}")
-
-            # Quick check: unscale targets if scalers are attached and print their means
-            try:
-                scaler = getattr(self.train_loader.dataset, 'target_scaler', None)
-                if scaler is not None:
-                    def unscale_array(arr, meta, scaler):
-                        if isinstance(scaler, dict):
-                            out = np.empty_like(arr, dtype=float)
-                            for i, t in enumerate(meta['Ticker'].values):
-                                s = scaler.get(t)
-                                if s is not None:
-                                    out[i] = s.inverse_transform(arr[i].reshape(1, -1)).item()
-                                else:
-                                    out[i] = arr[i]
-                            return out
-                        else:
-                            return scaler.inverse_transform(arr.reshape(-1, 1)).ravel()
-
-                    tr_unscaled = unscale_array(tr_y, self.train_loader.dataset.meta, scaler)
-                    va_unscaled = unscale_array(va_y, self.val_loader.dataset.meta, scaler)
-                    print(f"Validation actual returns (unscaled): Mean={np.nanmean(va_unscaled):.4f}")
-                    print(f"Training actual returns (unscaled): Mean={np.nanmean(tr_unscaled):.4f}")
-            except Exception as e:
-                print(f"Warning: Could not compute unscaled return stats: {e}")
-
-        except Exception as e:
-            print(f"Warning: Could not print target stats: {e}")
+        print(f"Loaded {len(self.folds)} rolling folds")
+        for fold_idx, (train_loader, val_loader, test_loader) in enumerate(self.folds):
+            print(f"  Fold {fold_idx}: Train={len(train_loader.dataset)}, "
+                  f"Val={len(val_loader.dataset)}, "
+                  f"Test={len(test_loader.dataset) if test_loader else 0}")
     
-    def setup_model(self) -> None:
-        """Initialize the model."""
-        if self.train_loader is None:
+    def setup_model(self, fold_idx: int = 0) -> None:
+        """Initialize the model based on a specific fold."""
+        if self.folds is None:
             raise RuntimeError("Must call setup_data() before setup_model()")
         
-        # Get input size from dataset
-        input_size = self.train_loader.dataset.X.shape[-1]
+        train_loader, _, _ = self.folds[fold_idx]
+        input_size = train_loader.dataset.X.shape[-1]
         
-        # Determine if we should use ticker embeddings
-        if self.config.use_ticker_embedding and hasattr(self.train_loader.dataset, 'ticker_to_idx'):
-            num_tickers = len(self.train_loader.dataset.ticker_to_idx)
+        if self.config.use_ticker_embedding and hasattr(train_loader.dataset, 'ticker_to_idx'):
+            num_tickers = len(train_loader.dataset.ticker_to_idx)
         else:
             num_tickers = None
             self.config.ticker_emb_dim = 0
@@ -132,87 +97,108 @@ class LSTMTrainer:
         print(f"Model has {self.model.total_parameters:,} parameters "
               f"({self.model.trainable_parameters:,} trainable)")
     
-    def train(self, verbose: bool = True) -> ExperimentResult:
-        """Train the model and return results."""
-        if self.model is None:
-            self.setup_model()
+    def train(self, verbose: bool = True) -> List[ExperimentResult]:
+        """Train the model on all folds and return results."""
+        if self.folds is None:
+            raise RuntimeError("Must call setup_data() before train()")
         
-        # Create save directory
-        save_dir = make_save_dir(self.config.to_dict(), base_dir=self.config.save_dir)
+        results = []
         
-        # Get target scaler if available
-        y_scaler = None
-        if hasattr(self.train_loader.dataset, 'target_scaler'):
-            y_scaler = self.train_loader.dataset.target_scaler
-        
-        # Prepare run metadata
-        run_metadata = {
-            "config": self.config.to_dict(),
-            "data_info": {
-                "n_train": len(self.train_loader.dataset),
-                "n_val": len(self.val_loader.dataset),
-                "n_test": len(self.test_loader.dataset),
-                "feature_cols": getattr(self.train_loader.dataset, 'feature_cols', []),
+        for fold_idx, (train_loader, val_loader, test_loader) in enumerate(self.folds):
+            print(f"\n{'='*80}")
+            print(f"Training Fold {fold_idx + 1}/{len(self.folds)}")
+            print(f"{'='*80}")
+            
+            self.setup_model(fold_idx)
+            
+            save_dir = make_save_dir(
+                self.config.to_dict(), 
+                base_dir=Path(self.config.save_dir) / f"fold_{fold_idx}"
+            )
+            
+            y_scaler = None
+            if hasattr(train_loader.dataset, 'target_scaler'):
+                y_scaler = train_loader.dataset.target_scaler
+            
+            run_metadata = {
+                "config": self.config.to_dict(),
+                "fold_idx": fold_idx,
+                "data_info": {
+                    "n_train": len(train_loader.dataset),
+                    "n_val": len(val_loader.dataset),
+                    "n_test": len(test_loader.dataset) if test_loader else 0,
+                    "feature_cols": getattr(train_loader.dataset, 'feature_cols', []),
+                }
             }
-        }
+            
+            history, best_ckpt_path = train_model(
+                model=self.model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                epochs=self.config.epochs,
+                device=self.device,
+                lr=self.config.lr,
+                weight_decay=self.config.weight_decay,
+                loss_fn=self.loss_fn,
+                scheduler_type=self.config.scheduler_type,
+                scheduler_kwargs={
+                    "factor": self.config.scheduler_factor,
+                    "patience": self.config.scheduler_patience,
+                    "min_lr": self.config.scheduler_min_lr,
+                },
+                optimizer_type=self.config.optimizer,
+                save_dir=str(save_dir),
+                ckpt_name="best.pt",
+                early_stopping_patience=self.config.early_stopping_patience,
+                grad_clip=self.config.grad_clip,
+                verbose=verbose,
+                y_scaler=y_scaler,
+                run_metadata=run_metadata,
+            )
+            
+            plot_training_history(history, save_path=save_dir / "training_history.png")
+            
+            best_epoch = history.get("best_epoch", -1)
+            best_val_metrics = {
+                "loss": history.get("best_val", float("inf")),
+                "mae": history["val_mae"][best_epoch - 1] if best_epoch > 0 and len(history.get("val_mae", [])) >= best_epoch else float("nan"),
+                "rmse": history["val_rmse"][best_epoch - 1] if best_epoch > 0 and len(history.get("val_rmse", [])) >= best_epoch else float("nan"),
+                "dir_acc": history["val_dir_acc"][best_epoch - 1] if best_epoch > 0 and len(history.get("val_dir_acc", [])) >= best_epoch else float("nan"),
+                "r2": history["val_r2"][best_epoch - 1] if best_epoch > 0 and len(history.get("val_r2", [])) >= best_epoch else float("nan"),
+                "sharpe_pred": history["val_sharpe_pred"][best_epoch - 1] if best_epoch > 0 and len(history.get("val_sharpe_pred", [])) >= best_epoch else float("nan"),
+            }
+            
+            result = ExperimentResult(
+                config=self.config,
+                history=history,
+                checkpoint_path=best_ckpt_path,
+                best_val_loss=history.get("best_val", float("inf")),
+                best_epoch=best_epoch,
+                val_metrics=best_val_metrics,
+            )
+            
+            result.save(save_dir / "results.json")
+            results.append(result)
         
-        # Train the model
-        history, best_ckpt_path = train_model(
-            model=self.model,
-            train_loader=self.train_loader,
-            val_loader=self.val_loader,
-            epochs=self.config.epochs,
-            device=self.device,
-            lr=self.config.lr,
-            weight_decay=self.config.weight_decay,
-            loss_fn=self.loss_fn,
-            scheduler_type=self.config.scheduler_type,
-            scheduler_kwargs={
-                "factor": self.config.scheduler_factor,
-                "patience": self.config.scheduler_patience,
-                "min_lr": self.config.scheduler_min_lr,
-            },
-            optimizer_type=self.config.optimizer,
-            save_dir=str(save_dir),
-            ckpt_name="best.pt",
-            early_stopping_patience=self.config.early_stopping_patience,
-            grad_clip=self.config.grad_clip,
-            verbose=verbose,
-            y_scaler=y_scaler,
-            run_metadata=run_metadata,
-        )
-        
-        # Plot training history
-        plot_training_history(history, save_path=save_dir / "training_history.png")
-        
-        # Create result object
-        result = ExperimentResult(
-            config=self.config,
-            history=history,
-            checkpoint_path=best_ckpt_path,
-            best_val_loss=history.get("best_val", float("inf")),
-            best_epoch=history.get("best_epoch", -1),
-            val_metrics=history.get("val_metrics", {}),
-        )
-        
-        # Save result
-        result.save(save_dir / "results.json")
-        
-        return result
+        return results
     
-    def evaluate(self, loader_type: str = "test") -> Dict[str, float]:
-        """Evaluate model on a specific loader."""
+    def evaluate(self, fold_idx: int = 0, loader_type: str = "test") -> Dict[str, float]:
+        """Evaluate model on a specific fold and loader."""
         if self.model is None:
             raise RuntimeError("Model not initialized")
         
         from .training.trainer import evaluate_on_loader
         
+        train_loader, val_loader, test_loader = self.folds[fold_idx]
+        
         if loader_type == "train":
-            loader = self.train_loader
+            loader = train_loader
         elif loader_type == "val":
-            loader = self.val_loader
+            loader = val_loader
         elif loader_type == "test":
-            loader = self.test_loader
+            if test_loader is None:
+                raise ValueError(f"Fold {fold_idx} has no test set")
+            loader = test_loader
         else:
             raise ValueError(f"Unknown loader type: {loader_type}")
         
@@ -242,20 +228,16 @@ def hyperparameter_sweep(
         config.tickers = tickers
         
         try:
-            # Create trainer
             trainer = LSTMTrainer(config)
             
-            # Setup data (force rebuild only for first config)
             trainer.setup_data(force_rebuild=(i == 0))
             
-            # Train
-            result = trainer.train(verbose=True)
-            results.append(result)
+            fold_results = trainer.train(verbose=True)
+            results.extend(fold_results)
             
-            # Save individual result
-            result.save(output_path / f"result_{i}.json")
+            for fold_idx, result in enumerate(fold_results):
+                result.save(output_path / f"result_{i}_fold_{fold_idx}.json")
             
-            # Quick mode: break after 2 configs
             if quick_mode and i >= 1:
                 print("Quick mode: Stopping after 2 configurations")
                 break

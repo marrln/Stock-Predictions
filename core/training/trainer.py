@@ -7,6 +7,7 @@ from typing import Dict, Tuple, Optional, Any, List
 from collections import defaultdict
 
 import numpy as np
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -269,7 +270,94 @@ def compute_unscaled_metrics(
             inv_targets = targets.ravel()
     
     # Compute metrics on unscaled values
-    return compute_regression_metrics(inv_preds, inv_targets, include_r2=True, include_sharpe=True)
+    ds = loader.dataset if hasattr(loader, 'dataset') else None
+    target_type = getattr(ds, 'target_type', 'return') if ds is not None else 'return'
+
+    # Handle 'close' (price) targets: directional accuracy and Sharpe should be computed on returns
+    if target_type == 'close' and ds is not None and ds.meta is not None and 'last_close' in ds.meta.columns:
+        last_close = ds.meta['last_close'].astype(float).values
+        # Avoid division by zero
+        safe_mask = (last_close != 0) & ~np.isnan(last_close)
+
+        # Compute basic metrics on prices (MAE/RMSE), but compute directional and sharpe on returns
+        metrics = compute_regression_metrics(inv_preds, inv_targets, include_r2=True, include_sharpe=False, include_directional=False)
+
+        # Prepare returns for directional and sharpe calculations
+        pred_returns = np.empty_like(inv_preds, dtype=float)
+        true_returns = np.empty_like(inv_targets, dtype=float)
+        pred_returns[~safe_mask] = 0.0
+        true_returns[~safe_mask] = 0.0
+        pred_returns[safe_mask] = (inv_preds[safe_mask] - last_close[safe_mask]) / last_close[safe_mask]
+        true_returns[safe_mask] = (inv_targets[safe_mask] - last_close[safe_mask]) / last_close[safe_mask]
+
+        # Directional accuracy computed on returns
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dir_acc_returns = float(np.mean(np.sign(pred_returns) == np.sign(true_returns)))
+        metrics['dir_acc'] = dir_acc_returns
+
+        # Sharpe-like ratios on returns
+        def _sharpe(arr: np.ndarray) -> float:
+            std = np.std(arr)
+            if std == 0 or np.isnan(std):
+                return 0.0
+            return float(np.mean(arr) / std)
+
+        metrics['sharpe_pred'] = _sharpe(pred_returns)
+        metrics['sharpe_true'] = _sharpe(true_returns)
+
+        # Per-ticker breakdown on prices + directional metrics computed on returns
+        ticker_array = np.array(all_tickers) if any(t is not None for t in all_tickers) else None
+        if ticker_array is not None:
+            per_ticker = {}
+            for t in np.unique(ticker_array):
+                mask = ticker_array == t
+                if mask.sum() == 0:
+                    continue
+
+                # Price-based metrics
+                sub_metrics = compute_regression_metrics(
+                    inv_preds[mask], inv_targets[mask],
+                    include_directional=False, include_r2=True, include_sharpe=False
+                )
+
+                # Returns-based directional + sharpe
+                lc = last_close[mask]
+                safe = (lc != 0) & ~np.isnan(lc)
+                if safe.any():
+                    pr = np.zeros(mask.sum(), dtype=float)
+                    tr = np.zeros(mask.sum(), dtype=float)
+                    pr[~safe] = 0.0
+                    tr[~safe] = 0.0
+                    pr[safe] = (inv_preds[mask][safe] - lc[safe]) / lc[safe]
+                    tr[safe] = (inv_targets[mask][safe] - lc[safe]) / lc[safe]
+                    sub_metrics['dir_acc'] = float(np.mean(np.sign(pr) == np.sign(tr)))
+                    sub_metrics['sharpe_pred'] = _sharpe(pr)
+                    sub_metrics['sharpe_true'] = _sharpe(tr)
+                else:
+                    sub_metrics['dir_acc'] = float('nan')
+                    sub_metrics['sharpe_pred'] = 0.0
+                    sub_metrics['sharpe_true'] = 0.0
+
+                per_ticker[str(t)] = sub_metrics
+
+            metrics['per_ticker'] = per_ticker
+
+        return metrics
+
+    # Default: returns or other targets — compute metrics directly (predictions & targets already unscaled)
+    # Include per-ticker breakdown when ticker information is available
+    ticker_array = np.array(all_tickers) if any(t is not None for t in all_tickers) else None
+
+    metrics = compute_regression_metrics(
+        inv_preds,
+        inv_targets,
+        include_r2=True,
+        include_sharpe=True,
+        ticker_ids=ticker_array
+    )
+
+    return metrics
 
 
 def train_model(

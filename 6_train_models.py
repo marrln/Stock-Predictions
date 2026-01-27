@@ -3,7 +3,7 @@
 Training script for stock price prediction with LSTM.
 
 Usage:
-    python 6_train_models.py --tickers AAPL MSFT GOOGL --quick
+    python 6_train_models.py --tickers "AAPL MSFT GOOG" --quick
     python 6_train_models.py --config configs/my_config.json
 """
 
@@ -48,8 +48,13 @@ def main():
     data_group.add_argument("--tickers", type=str, default="", help="Comma-separated ticker symbols (e.g., AAPL,MSFT,GOOGL)")
     data_group.add_argument("--all-tickers", action="store_true", help="Use all available tickers")
     data_group.add_argument("--max-tickers", type=int, default=None, help="Maximum number of tickers to use")
-    data_group.add_argument("--seq-len", type=int, default=8, help="Sequence length")
+    data_group.add_argument("--seq-len", type=int, default=60, help="Sequence length")
     data_group.add_argument("--target", choices=["return", "close"], default="return", help="Target to predict")
+    data_group.add_argument("--train-days", type=int, default=900, help="Training window size in days")
+    data_group.add_argument("--val-days", type=int, default=125, help="Validation window size in days")
+    data_group.add_argument("--test-days", type=int, default=125, help="Test window size in days (None to disable)")
+    data_group.add_argument("--step-days", type=int, default=125, help="Step size for rolling window")
+    data_group.add_argument("--no-test", action="store_true", help="Disable test window in rolling splits")
     
     # Training mode
     mode_group = parser.add_argument_group("Mode")
@@ -60,7 +65,7 @@ def main():
     
     # Model arguments (for single mode)
     model_group = parser.add_argument_group("Model (for single mode)")
-    model_group.add_argument("--hidden-size", type=int, default=128)
+    model_group.add_argument("--hidden-size", type=int, default=32)
     model_group.add_argument("--num-layers", type=int, default=2)
     model_group.add_argument("--dropout", type=float, default=0.2)
     model_group.add_argument("--pooling", choices=["last", "mean", "max"], default="last")
@@ -69,9 +74,9 @@ def main():
     # Training arguments
     train_group = parser.add_argument_group("Training")
     train_group.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    train_group.add_argument("--batch-size", type=int, default=64)
+    train_group.add_argument("--batch-size", type=int, default=32)
     train_group.add_argument("--epochs", type=int, default=100)
-    train_group.add_argument("--loss", choices=["mse", "huber", "l1"], default="mse")
+    train_group.add_argument("--loss", choices=["mse", "huber", "l1"], default="huber")
     train_group.add_argument("--optimizer", choices=["adam", "adamw", "sgd"], default="adam")
     train_group.add_argument("--device", choices=["cpu", "cuda", "mps"], default=None, help="Device to use (auto-detected if not specified)")
     
@@ -93,7 +98,7 @@ def main():
         print(f"Using specified tickers: {tickers}")
     else:
         # Default to a few major stocks
-        tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
+        tickers = ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "IBM", "NVDA"]
         print(f"Using default tickers: {tickers}")
     
     # Show ticker statistics
@@ -115,6 +120,10 @@ def main():
                 tickers=tickers,
                 seq_len=args.seq_len,
                 target_type=args.target,
+                train_days=args.train_days,
+                val_days=args.val_days,
+                test_days=None if args.no_test else args.test_days,
+                step_days=args.step_days,
                 hidden_size=args.hidden_size,
                 num_layers=args.num_layers,
                 dropout=args.dropout,
@@ -166,21 +175,34 @@ def main():
         
         trainer = LSTMTrainer(config, device=args.device)
         trainer.setup_data()
-        result = trainer.train(verbose=True)
+        results = trainer.train(verbose=True)
         
-        print("\nEvaluation results:")
-        for loader_type in ["train", "val", "test"]:
-            metrics = trainer.evaluate(loader_type)
-            dir_acc = metrics.get('dir_acc', float('nan'))
-            r2 = metrics.get('r2', float('nan'))
-            sharpe = metrics.get('sharpe_pred', float('nan'))
+        print(f"\nTrained on {len(results)} folds")
+        
+        for fold_idx, result in enumerate(results):
+            print(f"\n{'='*60}")
+            print(f"Fold {fold_idx} Results:")
+            print(f"{'='*60}")
+            
+            val_metrics = result.val_metrics
+            dir_acc = val_metrics.get('dir_acc', float('nan'))
+            r2 = val_metrics.get('r2', float('nan'))
+            sharpe = val_metrics.get('sharpe_pred', float('nan'))
+            
+            loss = val_metrics.get("loss", float("nan"))
+            mae = val_metrics.get("mae", float("nan"))
+            rmse = val_metrics.get("rmse", float("nan"))
+
             print(
-                f"{loader_type.upper()}: Loss={metrics['loss']:.4f}, "
-                f"MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}, "
-                f"DirAcc={dir_acc:.2%}, R2={r2:.4f}, Sharpe={sharpe:.4f}"
+                f"VAL: Loss={loss:.4f}, "
+                f"MAE={mae:.4f}, "
+                f"RMSE={rmse:.4f}, "
+                f"DirAcc={dir_acc*100:.2%}%, "
+                f"R2={r2*100:.2%}%, "
+                f"Sharpe={sharpe:.4f}"
             )
-        
-        print(f"\nModel saved to: {result.checkpoint_path}")
+            print(f"Best epoch: {result.best_epoch}")
+            print(f"Model saved to: {result.checkpoint_path}")
     print("\nTraining completed!")
 
 

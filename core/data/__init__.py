@@ -7,15 +7,16 @@ from .preprocessing import (
     create_sequences_from_ticker,
     get_ticker_stats,
     build_dataset_all_tickers,
-    split_time_based,
+    split_time_based_rolling,
     compute_scalers_from_train,
     apply_scaler_to_dataset,
 )
 from .loaders import (
     make_dataloaders,
     load_dataloaders,
-    build_and_save_datasets,
-    load_or_build_datasets,
+    load_rolling_folds,
+    build_and_save_rolling_folds,
+    load_or_build_rolling_folds,
     _drop_meta_collate,
 )
 
@@ -27,12 +28,13 @@ __all__ = [
     "create_sequences_from_ticker",
     "get_ticker_stats",
     "build_dataset_all_tickers",
-    "split_time_based",
+    "split_time_based_rolling",
     "compute_scalers_from_train",
     "apply_scaler_to_dataset",
     "make_dataloaders",
     "load_dataloaders",
-    "build_and_save_datasets",
-    "load_or_build_datasets",
+    "load_rolling_folds",
+    "build_and_save_rolling_folds",
+    "load_or_build_rolling_folds",
     "_drop_meta_collate",
 ]

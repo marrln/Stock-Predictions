@@ -1,8 +1,14 @@
 # Quick training configuration
 tickers: ["AAPL", "MSFT", "GOOGL"]
-seq_len: 8
+seq_len: 30
 target_type: "return"
 batch_size: 64
+
+# Rolling window parameters
+train_days: 750
+val_days: 125
+test_days: 125
+step_days: 125
 
 model:
   hidden_size: 128

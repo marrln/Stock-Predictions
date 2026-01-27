@@ -315,66 +315,135 @@ def build_dataset_all_tickers(
     return {"X": X_all, "y": y_all}, info, meta_all
 
 
-def split_time_based(
+def split_time_based_rolling(
     meta: pd.DataFrame,
     X: np.ndarray,
     y: np.ndarray,
-    train_val_years: Tuple[int, int] = (2018, 2021),
-    test_years: Tuple[int, int] = (2022, 2023),
-    val_duration_months: int = 12,
-) -> Tuple[TimeSeriesDataset, TimeSeriesDataset, TimeSeriesDataset]:
-    """Split data into train/val/test temporally without leakage.
-
-    Validation is constructed as the last `val_duration_months` calendar months
-    that fall within the `train_val_years` interval. Training contains samples
-    from the same interval that are strictly earlier than the validation months.
-    Test contains samples whose year equals `test_year`.
+    train_days: int = 750,
+    val_days: int = 125,
+    test_days: Optional[int] = 125,
+    seq_len: int = 30,
+    step_days: int = 125,
+) -> List[
+    Tuple[
+        TimeSeriesDataset,
+        TimeSeriesDataset,
+        Optional[TimeSeriesDataset],
+    ]
+]:
     """
-    if val_duration_months < 1:
-        raise ValueError("val_duration_months must be >= 1")
+    Rolling (walk-forward) splits with purging and optional test window.
+
+    Fold layout:
+        |-- train --|-- embargo --|-- val --|-- embargo --|-- test --|
+
+    If test_days is None, no test set is created.
+
+    Returns:
+        List of (train_ds, val_ds, test_ds_or_None)
+    """
+
+    if len(meta) != len(X) or len(X) != len(y):
+        raise ValueError("meta, X, and y must have the same length")
 
     meta = meta.copy()
-    meta["Date"] = pd.to_datetime(meta["Date"])
+    meta["Date"] = pd.to_datetime(meta["Date"])  # ensure datetime
 
-    # Test mask (years between the given range)
-    test_mask = (meta["Date"].dt.year >= test_years[0]) & (meta["Date"].dt.year <= test_years[1])
-    
-    # Train+val mask (years between the given range)
-    tv_mask = (meta["Date"].dt.year >= train_val_years[0]) & (meta["Date"].dt.year <= train_val_years[1])
+    # Sort chronologically (CRITICAL)
+    order = np.argsort(meta["Date"].values)
 
-    # If no samples in tv window, return empty datasets for train/val
-    periods = meta.loc[tv_mask, "Date"].dt.to_period("M")
-    unique_periods = sorted(periods.unique())
+    X = X[order]
+    y = y[order]
+    meta = meta.iloc[order].reset_index(drop=True)
 
-    if not unique_periods:
-        train_mask = pd.Series(False, index=meta.index)
-        val_mask = pd.Series(False, index=meta.index)
-    else:
-        # Select the last `val_duration_months` months as validation
-        val_periods = unique_periods[-val_duration_months:]
-        val_mask = tv_mask & meta["Date"].dt.to_period("M").isin(val_periods)
-        train_mask = tv_mask & (~val_mask)
+    # Use unique trading dates as the unit for train/val/test sizes
+    unique_dates = meta["Date"].dt.normalize().drop_duplicates().sort_values().reset_index(drop=True)
+    D = len(unique_dates)
 
-    # Log counts
-    print(f"Samples: Train={train_mask.sum()}, Val={val_mask.sum()}, Test={test_mask.sum()}")
+    folds = []
+    fold_id = 0
+    date_start_idx = 0
 
-    train_ds = TimeSeriesDataset(
-        X[train_mask.values],
-        y[train_mask.values],
-        meta=meta.loc[train_mask.values].reset_index(drop=True),
-    )
-    val_ds = TimeSeriesDataset(
-        X[val_mask.values],
-        y[val_mask.values],
-        meta=meta.loc[val_mask.values].reset_index(drop=True),
-    )
-    test_ds = TimeSeriesDataset(
-        X[test_mask.values],
-        y[test_mask.values],
-        meta=meta.loc[test_mask.values].reset_index(drop=True),
-    )
+    while True:
+        # Compute date-based indices (inclusive)
+        train_end_idx = date_start_idx + train_days - 1
+        val_start_idx = train_end_idx + seq_len
+        val_end_idx = val_start_idx + val_days - 1
 
-    return train_ds, val_ds, test_ds
+        if test_days is not None:
+            test_start_idx = val_end_idx + seq_len
+            test_end_idx = test_start_idx + test_days - 1
+        else:
+            test_start_idx = test_end_idx = None
+
+        # Stop if validation window goes beyond available dates
+        if val_end_idx >= D:
+            break
+        if test_days is not None and test_end_idx >= D:
+            break
+
+        # Map date ranges back to sample indices (all samples whose Date falls in range)
+        train_dates = unique_dates[date_start_idx : train_end_idx + 1]
+        val_dates = unique_dates[val_start_idx : val_end_idx + 1]
+        test_dates = (
+            unique_dates[test_start_idx : test_end_idx + 1]
+            if test_days is not None
+            else pd.Index([])
+        )
+
+        train_mask = meta["Date"].dt.normalize().isin(train_dates)
+        val_mask = meta["Date"].dt.normalize().isin(val_dates)
+        test_mask = meta["Date"].dt.normalize().isin(test_dates) if test_days is not None else None
+
+        if train_mask.sum() == 0 or val_mask.sum() == 0:
+            # If a window yields no samples (unlikely), advance and continue
+            date_start_idx += step_days
+            continue
+
+        train_ds = TimeSeriesDataset(
+            X[train_mask.values],
+            y[train_mask.values],
+            meta=meta.loc[train_mask.values].reset_index(drop=True),
+        )
+
+        val_ds = TimeSeriesDataset(
+            X[val_mask.values],
+            y[val_mask.values],
+            meta=meta.loc[val_mask.values].reset_index(drop=True),
+        )
+
+        if test_days is not None:
+            test_ds = TimeSeriesDataset(
+                X[test_mask.values],
+                y[test_mask.values],
+                meta=meta.loc[test_mask.values].reset_index(drop=True),
+            )
+        else:
+            test_ds = None
+
+        folds.append((train_ds, val_ds, test_ds))
+
+        msg = (
+            f"Fold {fold_id}: "
+            f"Train [{train_ds.meta['Date'].min().date()} -> {train_ds.meta['Date'].max().date()}], "
+            f"Val [{val_ds.meta['Date'].min().date()} -> {val_ds.meta['Date'].max().date()}]"
+        )
+
+        if test_ds is not None:
+            msg += (
+                f", Test [{test_ds.meta['Date'].min().date()} -> "
+                f"{test_ds.meta['Date'].max().date()}]"
+            )
+
+        print(msg)
+
+        fold_id += 1
+        date_start_idx += step_days
+
+    if not folds:
+        raise ValueError("No rolling folds could be created with the given parameters")
+
+    return folds
 
 
 def compute_scalers_from_train(
