@@ -12,7 +12,7 @@ import pandas as pd
 
 from .models.lstm import PriceNewsLSTMReg
 from .checkpoint import find_all_experiments
-from .training.trainer import get_predictions, compute_regression_metrics
+from .training.trainer import get_predictions, compute_regression_metrics, compute_unscaled_metrics
 from .utils.plotting import save_model_comparison, plot_model_comparison
 from .baselines import evaluate_persistence_on_loader
 
@@ -86,6 +86,7 @@ class ModelEvaluator:
                 bidirectional=model_config.get("bidirectional", False),
                 num_tickers=num_tickers,
                 ticker_emb_dim=model_config.get("ticker_emb_dim", 16),
+                expansion_factor=model_config.get("expansion_factor", 4),
             ).to(self.device)
             
             # Load weights
@@ -98,16 +99,26 @@ class ModelEvaluator:
             raise
     
     def evaluate_model(self, model: PriceNewsLSTMReg) -> Dict[str, float]:
-        """Evaluate a single model on test set."""
+        """Evaluate a single model on test set.
+
+        If the dataset includes target scalers, return metrics in the original
+        (unscaled) target space for consistency with training logs.
+        """
         if self.test_loader is None:
             raise RuntimeError("Call setup() first")
         
-        # Get predictions
+        # If dataset has per-ticker or single scalers attached, compute unscaled metrics
+        dataset = self.test_loader.dataset
+        y_scaler = getattr(dataset, "target_scaler", None)
+        if y_scaler is not None:
+            try:
+                return compute_unscaled_metrics(model, self.test_loader, self.device, y_scaler)
+            except Exception as e:
+                print(f"Warning: Failed to compute unscaled metrics: {e}")
+        
+        # Fallback: compute metrics on raw output (likely scaled)
         predictions, targets = get_predictions(model, self.test_loader, self.device)
-        
-        # Compute metrics
-        metrics = compute_regression_metrics(predictions, targets, include_directional=True)
-        
+        metrics = compute_regression_metrics(predictions, targets, include_directional=True, include_r2=True, include_sharpe=True)
         return metrics
     
     def evaluate_all_experiments(
@@ -156,6 +167,8 @@ class ModelEvaluator:
                 print(f"  Test MAE: {metrics['mae']:.6f}")
                 print(f"  Test RMSE: {metrics['rmse']:.6f}")
                 print(f"  Directional Accuracy: {metrics.get('dir_acc', 0.0):.2%}")
+                print(f"  R2: {metrics.get('r2', 0.0):.6f}")
+                print(f"  Sharpe (pred): {metrics.get('sharpe_pred', 0.0):.6f}")
                 print()
                 
             except Exception as e:
@@ -218,9 +231,12 @@ class ModelEvaluator:
                 "MAE": metrics.get("mae", float("nan")),
                 "RMSE": metrics.get("rmse", float("nan")),
                 "DirAcc": metrics.get("dir_acc", float("nan")),
+                "R2": metrics.get("r2", float("nan")),
+                "Sharpe": metrics.get("sharpe_pred", float("nan")),
                 "Hidden Size": config.get("hidden_size", "N/A"),
                 "Layers": config.get("num_layers", "N/A"),
                 "Dropout": config.get("dropout", "N/A"),
+                "ExpansionFactor": config.get("expansion_factor", "N/A"),
                 "Pooling": config.get("pooling", "N/A"),
                 "Best Val Loss": checkpoint_info.get("best_val_loss", "N/A"),
             }
@@ -341,6 +357,8 @@ def compare_experiments(
     print(f"Test MAE: {metrics.get('mae', 'N/A'):.6f}")
     print(f"Test RMSE: {metrics.get('rmse', 'N/A'):.6f}")
     print(f"Directional Accuracy: {metrics.get('dir_acc', 0.0):.2%}")
+    print(f"R2: {metrics.get('r2', 0.0):.6f}")
+    print(f"Sharpe (pred): {metrics.get('sharpe_pred', 0.0):.6f}")
     
     # Save results
     evaluator.save_results(results, output_dir)
