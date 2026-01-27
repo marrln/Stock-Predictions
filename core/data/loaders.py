@@ -173,8 +173,9 @@ def build_and_save_datasets(
     sentiment_fill: str = "ffill",
     target_type: str = "return",
     target_scaling: bool = True,
-    train_val_years: Tuple[int, int] = (2018, 2022),
-    test_year: int = 2023,
+    train_val_years: Tuple[int, int] = (2018, 2021),
+    test_years: Tuple[int, int] = (2022, 2023),
+    val_duration_months: int = 12,
 ) -> Tuple[TimeSeriesDataset, TimeSeriesDataset, TimeSeriesDataset]:
     """Build datasets from source data and save to disk."""
     print(f"Building datasets for {len(tickers)} tickers")
@@ -197,7 +198,8 @@ def build_and_save_datasets(
     train_ds, val_ds, test_ds = split_time_based(
         meta, X_all, y_all, 
         train_val_years=train_val_years,
-        test_year=test_year
+        test_years=test_years,
+        val_duration_months=val_duration_months,
     )
     print(f"Split: Train={len(train_ds)}, Val={len(val_ds)}, Test={len(test_ds)}")
     
@@ -260,8 +262,18 @@ def _scale_targets_per_ticker(
         scaler = StandardScaler().fit(y_t)
         y_scalers[ticker] = scaler
         
+        # Debug: print pre/post scaling stats for this ticker
+        try:
+            print(f"Target scaling - {ticker}: train mean={y_t.mean():.6f}, std={y_t.std():.6f}")
+        except Exception:
+            pass
+        
         # Transform train targets
         train_ds.y[indices] = scaler.transform(y_t).reshape(-1)
+        try:
+            print(f"Target scaling - {ticker}: scaled train mean={train_ds.y[indices].mean():.6f}, std={train_ds.y[indices].std():.6f}")
+        except Exception:
+            pass
     
     # Transform validation and test targets
     for ds in [val_ds, test_ds]:

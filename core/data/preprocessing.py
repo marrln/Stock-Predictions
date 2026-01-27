@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import pickle
 from pathlib import Path
 from typing import Any, List, Tuple, Dict, Optional
 
@@ -37,6 +36,33 @@ def load_price_for_ticker(ticker: str, price_dir: str = DEFAULT_PRICE_DIR) -> pd
     return df.rename(columns={"date": "Date"})
 
 
+def calculate_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    """Compute the Relative Strength Index (RSI) over a rolling window."""
+    delta = series.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+
+    # Use simple moving average for initial implementation
+    avg_gain = gain.rolling(window=window, min_periods=1).mean()
+    avg_loss = loss.rolling(window=window, min_periods=1).mean()
+
+    # Avoid division by zero
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(50.0)  # neutral when undefined
+    rsi = rsi.replace([np.inf, -np.inf], 50.0)
+    return rsi
+
+
+def calculate_bollinger_bands(series: pd.Series, window: int = 20, num_std: int = 2) -> Tuple[pd.Series, pd.Series]:
+    """Return upper and lower Bollinger Bands for the series."""
+    mid = series.rolling(window=window, min_periods=1).mean()
+    std = series.rolling(window=window, min_periods=1).std().fillna(0.0)
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return upper, lower
+
+
 def make_features_for_ticker(
     price_df: pd.DataFrame,
     sentiment_df: pd.DataFrame,
@@ -67,10 +93,23 @@ def make_features_for_ticker(
     close = df["close"].astype(float)
     df["intraday_range"] = np.where(close > 0, (high - low) / close, 0.0)
     
-    # Technical indicators
-    df["volatility_5"] = df["return"].rolling(window=5, min_periods=1).std().fillna(0.0)
-    df["ma_5"] = df["close"].rolling(window=5, min_periods=1).mean()
-    df["ma_20"] = df["close"].rolling(window=20, min_periods=1).mean()
+    # Technical indicators (shifted to avoid lookahead)
+    df["volatility_5"] = df["return"].rolling(window=5, min_periods=1).std().shift(1).fillna(0.0)
+    df["ma_5"] = df["close"].rolling(window=5, min_periods=1).mean().shift(1)
+    df["ma_20"] = df["close"].rolling(window=20, min_periods=1).mean().shift(1)
+
+    # Additional indicators: RSI, Bollinger Bands, Rate of Change (shifted)
+    df["rsi_14"] = calculate_rsi(df["close"], 14).shift(1).fillna(50.0)
+    bb_upper, bb_lower = calculate_bollinger_bands(df["close"], window=20, num_std=2)
+    df["bb_upper"] = bb_upper.shift(1)
+    df["bb_lower"] = bb_lower.shift(1)
+    df["roc_10"] = df["close"].pct_change(10).shift(1).fillna(0.0)
+
+    # Momentum and volume spike indicators (shifted to avoid lookahead)
+    df["momentum_5"] = (df["close"] / df["close"].shift(5) - 1).shift(1).fillna(0.0)
+    df["momentum_10"] = (df["close"] / df["close"].shift(10) - 1).shift(1).fillna(0.0)
+    vol_roll = df["volume"].rolling(window=20, min_periods=1).mean().shift(1)
+    df["volume_spike"] = (df["volume"] > vol_roll * 1.5).astype(float).fillna(0.0)
     
     # Merge sentiment
     merged = pd.merge(
@@ -221,6 +260,10 @@ def build_dataset_all_tickers(
         feature_cols = [
             "return", "log_volume", "intraday_range", 
             "volatility_5", "ma_5", "ma_20", 
+            # Additional indicators
+            "rsi_14", "bb_upper", "bb_lower", "roc_10",
+            # Momentum and volume features
+            "momentum_5", "momentum_10", "volume_spike",
             "daily_sentiment", "n_articles"
         ]
     
@@ -231,7 +274,9 @@ def build_dataset_all_tickers(
         raise ValueError("Must specify tickers when no sentiment data available")
     
     X_chunks, y_chunks, metas = [], [], []
-    
+    missing_tickers: List[str] = []
+    processed_tickers: List[str] = []
+
     for ticker in tickers:
         try:
             price_df = load_price_for_ticker(ticker, price_dir)
@@ -242,8 +287,17 @@ def build_dataset_all_tickers(
                 X_chunks.append(X_t)
                 y_chunks.append(y_t)
                 metas.append(meta_t)
+                processed_tickers.append(ticker)
         except FileNotFoundError:
+            missing_tickers.append(ticker)
             continue
+
+    if missing_tickers:
+        print(f"Warning: Missing price files for tickers: {', '.join(missing_tickers)}")
+    if processed_tickers:
+        print(f"Processed tickers: {', '.join(processed_tickers)}")
+    else:
+        print("Warning: No tickers produced sequences with the provided settings.")
     
     if not X_chunks:
         return {}, {}, pd.DataFrame()
@@ -265,60 +319,61 @@ def split_time_based(
     meta: pd.DataFrame,
     X: np.ndarray,
     y: np.ndarray,
-    train_val_years: Tuple[int, int] = (2018, 2022),
-    test_year: int = 2023,
-    val_frequency_months: int = 4,
-    val_duration_months: int = 1,
+    train_val_years: Tuple[int, int] = (2018, 2021),
+    test_years: Tuple[int, int] = (2022, 2023),
+    val_duration_months: int = 12,
 ) -> Tuple[TimeSeriesDataset, TimeSeriesDataset, TimeSeriesDataset]:
-    """Split data into train/val/test temporally."""
-    if val_frequency_months <= 0:
-        raise ValueError("val_frequency_months must be > 0")
-    if val_duration_months >= val_frequency_months:
-        raise ValueError("val_duration_months must be less than val_frequency_months")
-    
+    """Split data into train/val/test temporally without leakage.
+
+    Validation is constructed as the last `val_duration_months` calendar months
+    that fall within the `train_val_years` interval. Training contains samples
+    from the same interval that are strictly earlier than the validation months.
+    Test contains samples whose year equals `test_year`.
+    """
+    if val_duration_months < 1:
+        raise ValueError("val_duration_months must be >= 1")
+
     meta = meta.copy()
     meta["Date"] = pd.to_datetime(meta["Date"])
-    years = meta["Date"].dt.year
+
+    # Test mask (years between the given range)
+    test_mask = (meta["Date"].dt.year >= test_years[0]) & (meta["Date"].dt.year <= test_years[1])
     
-    # Test mask
-    test_mask = years == test_year
-    
-    # Train+val mask
-    tv_mask = (years >= train_val_years[0]) & (years <= train_val_years[1])
-    
-    # Build validation months
-    start = pd.Timestamp(year=train_val_years[0], month=1, day=1)
-    months_since_start = (meta.loc[tv_mask, "Date"].dt.year - start.year) * 12 + \
-                         (meta.loc[tv_mask, "Date"].dt.month - start.month)
-    
-    val_idx_mask = pd.Series(False, index=meta.index)
-    for idx in months_since_start.index:
-        ms = months_since_start.loc[idx]
-        if (ms % val_frequency_months) < val_duration_months:
-            val_idx_mask.loc[idx] = True
-    
-    train_mask = tv_mask & (~val_idx_mask)
-    val_mask = tv_mask & val_idx_mask
-    
-    # Create datasets
+    # Train+val mask (years between the given range)
+    tv_mask = (meta["Date"].dt.year >= train_val_years[0]) & (meta["Date"].dt.year <= train_val_years[1])
+
+    # If no samples in tv window, return empty datasets for train/val
+    periods = meta.loc[tv_mask, "Date"].dt.to_period("M")
+    unique_periods = sorted(periods.unique())
+
+    if not unique_periods:
+        train_mask = pd.Series(False, index=meta.index)
+        val_mask = pd.Series(False, index=meta.index)
+    else:
+        # Select the last `val_duration_months` months as validation
+        val_periods = unique_periods[-val_duration_months:]
+        val_mask = tv_mask & meta["Date"].dt.to_period("M").isin(val_periods)
+        train_mask = tv_mask & (~val_mask)
+
+    # Log counts
+    print(f"Samples: Train={train_mask.sum()}, Val={val_mask.sum()}, Test={test_mask.sum()}")
+
     train_ds = TimeSeriesDataset(
-        X[train_mask.values], 
-        y[train_mask.values], 
-        meta=meta.loc[train_mask.values].reset_index(drop=True)
+        X[train_mask.values],
+        y[train_mask.values],
+        meta=meta.loc[train_mask.values].reset_index(drop=True),
     )
-    
     val_ds = TimeSeriesDataset(
-        X[val_mask.values], 
-        y[val_mask.values], 
-        meta=meta.loc[val_mask.values].reset_index(drop=True)
+        X[val_mask.values],
+        y[val_mask.values],
+        meta=meta.loc[val_mask.values].reset_index(drop=True),
     )
-    
     test_ds = TimeSeriesDataset(
-        X[test_mask.values], 
-        y[test_mask.values], 
-        meta=meta.loc[test_mask.values].reset_index(drop=True)
+        X[test_mask.values],
+        y[test_mask.values],
+        meta=meta.loc[test_mask.values].reset_index(drop=True),
     )
-    
+
     return train_ds, val_ds, test_ds
 
 
