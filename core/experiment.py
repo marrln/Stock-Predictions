@@ -27,6 +27,7 @@ class ExperimentConfig:
     bidirectional: bool = False
     use_ticker_embedding: bool = True
     ticker_emb_dim: int = 16
+    expansion_factor: int = 4
     
     # Training hyperparameters
     optimizer: str = "adam"
@@ -94,13 +95,26 @@ class ExperimentResult:
     
     def save(self, path: Path) -> None:
         """Save experiment results to JSON."""
+        # Extract R2 and Sharpe from val_metrics or fallback to history
+        val_r2 = self.val_metrics.get("r2") if isinstance(self.val_metrics, dict) else None
+        val_sharpe = self.val_metrics.get("sharpe_pred") if isinstance(self.val_metrics, dict) else None
+
+        if val_r2 is None:
+            vr = self.history.get("val_r2")
+            val_r2 = vr[-1] if vr else None
+        if val_sharpe is None:
+            vs = self.history.get("val_sharpe_pred")
+            val_sharpe = vs[-1] if vs else None
+
         data = {
             "config": self.config.to_dict(),
             "history": self.history,
             "checkpoint_path": str(self.checkpoint_path),
             "best_val_loss": self.best_val_loss,
             "best_epoch": self.best_epoch,
-            "val_metrics": self.val_metrics
+            "val_metrics": self.val_metrics,
+            "val_r2": val_r2,
+            "val_sharpe_pred": val_sharpe,
         }
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -116,6 +130,7 @@ def create_hyperparameter_grid() -> List[ExperimentConfig]:
     dropout_rates = [0.1, 0.2, 0.3]
     learning_rates = [1e-3, 5e-4, 1e-4]
     pooling_methods = ["last", "mean", "max"]
+    expansion_factors = [2, 4, 8]
     
     configs = []
     
@@ -124,15 +139,17 @@ def create_hyperparameter_grid() -> List[ExperimentConfig]:
             for dr in dropout_rates:
                 for lr in learning_rates:
                     for pool in pooling_methods:
-                        config = ExperimentConfig(
-                            hidden_size=hs,
-                            num_layers=nl,
-                            dropout=dr,
-                            lr=lr,
-                            pooling=pool,
-                            experiment_name=f"h{hs}_l{nl}_d{dr}_lr{lr}_p{pool}"
-                        )
-                        configs.append(config)
+                        for ef in expansion_factors:
+                            config = ExperimentConfig(
+                                hidden_size=hs,
+                                num_layers=nl,
+                                dropout=dr,
+                                lr=lr,
+                                pooling=pool,
+                                expansion_factor=ef,
+                                experiment_name=f"h{hs}_l{nl}_d{dr}_lr{lr}_p{pool}_ef{ef}"
+                            )
+                            configs.append(config)
     
     return configs
 
@@ -146,6 +163,7 @@ def create_quick_grid() -> List[ExperimentConfig]:
             dropout=0.1,
             lr=1e-3,
             pooling="last",
+            expansion_factor=2,
             epochs=30,
             early_stopping_patience=10,
             experiment_name="quick_small"
@@ -156,6 +174,7 @@ def create_quick_grid() -> List[ExperimentConfig]:
             dropout=0.2,
             lr=1e-3,
             pooling="mean",
+            expansion_factor=4,
             epochs=30,
             early_stopping_patience=10,
             experiment_name="quick_medium"
