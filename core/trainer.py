@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from .data.loaders import load_or_build_datasets, build_and_save_datasets
 from .models.lstm import PriceNewsLSTMReg
@@ -58,6 +59,43 @@ class LSTMTrainer:
         
         print(f"Data loaded: Train={len(self.train_loader.dataset)}, "
               f"Val={len(self.val_loader.dataset)}, Test={len(self.test_loader.dataset)}")
+
+        # DEBUG: print target statistics to catch scaling issues
+        try:
+            tr_y = self.train_loader.dataset.y
+            va_y = self.val_loader.dataset.y
+            te_y = self.test_loader.dataset.y
+            print(f"Target stats - Train: mean={tr_y.mean():.6f}, std={tr_y.std():.6f}")
+            print(f"Target stats - Val: mean={va_y.mean():.6f}, std={va_y.std():.6f}")
+            print(f"Target stats - Test: mean={te_y.mean():.6f}, std={te_y.std():.6f}")
+            print(f"Sample targets - Train: {tr_y[:5]}")
+
+            # Quick check: unscale targets if scalers are attached and print their means
+            try:
+                scaler = getattr(self.train_loader.dataset, 'target_scaler', None)
+                if scaler is not None:
+                    def unscale_array(arr, meta, scaler):
+                        if isinstance(scaler, dict):
+                            out = np.empty_like(arr, dtype=float)
+                            for i, t in enumerate(meta['Ticker'].values):
+                                s = scaler.get(t)
+                                if s is not None:
+                                    out[i] = s.inverse_transform(arr[i].reshape(1, -1)).item()
+                                else:
+                                    out[i] = arr[i]
+                            return out
+                        else:
+                            return scaler.inverse_transform(arr.reshape(-1, 1)).ravel()
+
+                    tr_unscaled = unscale_array(tr_y, self.train_loader.dataset.meta, scaler)
+                    va_unscaled = unscale_array(va_y, self.val_loader.dataset.meta, scaler)
+                    print(f"Validation actual returns (unscaled): Mean={np.nanmean(va_unscaled):.4f}")
+                    print(f"Training actual returns (unscaled): Mean={np.nanmean(tr_unscaled):.4f}")
+            except Exception as e:
+                print(f"Warning: Could not compute unscaled return stats: {e}")
+
+        except Exception as e:
+            print(f"Warning: Could not print target stats: {e}")
     
     def setup_model(self) -> None:
         """Initialize the model."""
@@ -76,6 +114,7 @@ class LSTMTrainer:
         
         print(f"Creating model with input_size={input_size}, "
               f"hidden_size={self.config.hidden_size}, "
+              f"expansion_factor={self.config.expansion_factor}, "
               f"num_tickers={num_tickers}")
         
         self.model = PriceNewsLSTMReg(
@@ -87,6 +126,7 @@ class LSTMTrainer:
             bidirectional=self.config.bidirectional,
             num_tickers=num_tickers,
             ticker_emb_dim=self.config.ticker_emb_dim,
+            expansion_factor=self.config.expansion_factor,
         )
         
         print(f"Model has {self.model.total_parameters:,} parameters "
