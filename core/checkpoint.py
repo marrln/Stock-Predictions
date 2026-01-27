@@ -18,6 +18,7 @@ def make_checkpoint_name(config: Dict[str, Any], prefix: str = "best") -> str:
     parts.append(f"h{config.get('hidden_size', 128)}")
     parts.append(f"l{config.get('num_layers', 2)}")
     parts.append(f"d{config.get('dropout', 0.2)}")
+    parts.append(f"ef{config.get('expansion_factor', 4)}")
     
     # Training parameters
     parts.append(f"lr{config.get('lr', 0.001)}")
