@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import torch.nn as nn
 
+from core.training.losses import DirectionalLoss, SignPenaltyLoss, AsymmetricLoss, QuantileLoss
+
 
 @dataclass
 class ExperimentConfig:
@@ -17,11 +19,13 @@ class ExperimentConfig:
     sentiment_fill: str = "ffill"
     batch_size: int = 64
     target_scaling: bool = True
+    market_csv: Optional[str] = "data_stats/SPY.csv"  # SPY ETF price data for market features
     
     train_days: int = 750
     val_days: int = 125
     test_days: Optional[int] = 125
     step_days: int = 125
+    fold_mode: str = "rolling"  # 'rolling' (fixed window) or 'expanding' (growing train)
     
     hidden_size: int = 128
     num_layers: int = 2
@@ -37,6 +41,10 @@ class ExperimentConfig:
     weight_decay: float = 0.0
     loss: str = "mse"
     huber_delta: float = 1.0
+    direction_weight: float = 2.0  # For directional loss
+    direction_penalty: float = 0.0  # Additional penalty for wrong direction
+    sign_penalty_alpha: float = 1.0  # For sign penalty loss
+    quantile: float = 0.5  # For quantile loss
     epochs: int = 100
     early_stopping_patience: int = 20
     grad_clip: float = 1.0
@@ -49,6 +57,9 @@ class ExperimentConfig:
     experiment_name: Optional[str] = None
     save_dir: str = "experiments"
     data_dir: str = "processed_data"
+    
+    # Plotting configuration
+    max_plot_tickers: int = 7  # Max number of tickers to plot per fold (0 = plot all)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -79,6 +90,22 @@ class ExperimentConfig:
             return nn.HuberLoss(delta=self.huber_delta)
         elif self.loss == "l1":
             return nn.L1Loss()
+        elif self.loss == "directional":
+            return DirectionalLoss(
+                base_loss='mse',
+                direction_weight=self.direction_weight,
+                direction_penalty=self.direction_penalty
+            )
+        elif self.loss == "directional_mae":
+            return DirectionalLoss(
+                base_loss='mae',
+                direction_weight=self.direction_weight,
+                direction_penalty=self.direction_penalty
+            )
+        elif self.loss == "sign_penalty":
+            return SignPenaltyLoss(alpha=self.sign_penalty_alpha)
+        elif self.loss == "quantile":
+            return QuantileLoss(quantile=self.quantile)
         else:
             raise ValueError(f"Unknown loss function: {self.loss}")
 
