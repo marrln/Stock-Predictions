@@ -63,7 +63,7 @@ class NewsProcessor:
             'Lexrank_summary', 'Lunh_summary'
         }
         
-        with open(NEWS_CSV, 'r') as f:
+        with open(NEWS_CSV, 'r', encoding='utf-8') as f:
             header = f.readline().strip()
         all_cols = header.split(',')
         return [col for col in all_cols if col not in drop_cols]
@@ -156,7 +156,7 @@ class NewsProcessor:
         articles_written = False
         
         # Estimate total rows for progress
-        total_estimated = sum(1 for _ in open(FILTERED_NEWS_CSV)) - 1
+        total_estimated = sum(1 for _ in open(FILTERED_NEWS_CSV, encoding='utf-8')) - 1
         
         for chunk_idx, chunk in enumerate(
             pd.read_csv(
@@ -266,7 +266,7 @@ class NewsProcessor:
         
         # Atomic write
         tmp_file = METADATA_JSON + '.tmp'
-        with open(tmp_file, 'w') as f:
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(serializable, f, separators=(',', ':'))  # Compact JSON
         os.replace(tmp_file, METADATA_JSON)
     
@@ -349,7 +349,7 @@ class NewsProcessor:
         tmp_file = ARTICLES_CSV + '.tmp'
         keep_indices_set = set(keep_indices)
         
-        with open(tmp_file, 'w') as out_f:
+        with open(tmp_file, 'w', encoding='utf-8') as out_f:
             write_header = True
             
             for chunk in pd.read_csv(ARTICLES_CSV, chunksize=100_000):
@@ -459,7 +459,7 @@ class NewsProcessor:
 
         if os.path.exists(METADATA_JSON):
             # Load JSON metadata which stores per-URL ticker lists
-            with open(METADATA_JSON, 'r') as f:
+            with open(METADATA_JSON, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
 
             for v in metadata.values():
@@ -511,7 +511,7 @@ class NewsProcessor:
 
         # Save to file
         os.makedirs(os.path.dirname(NEWS_STATS_JSON), exist_ok=True)
-        with open(NEWS_STATS_JSON, 'w') as f:
+        with open(NEWS_STATS_JSON, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2)
 
         print(f"[INFO] Wrote statistics for {len(result):,} tickers (present in all years {START_YEAR}-{END_YEAR} with >= {MIN_PER_YEAR} articles/year)")
@@ -578,7 +578,7 @@ def main():
     else:
         # Load existing metadata
         if os.path.exists(METADATA_JSON):
-            with open(METADATA_JSON, 'r') as f:
+            with open(METADATA_JSON, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
     
     # Phase 2.5: Enrich tickers from titles (BEFORE pruning)
