@@ -37,7 +37,7 @@ class LSTMTrainer:
     
     def setup_data(self, force_rebuild: bool = False) -> None:
         """Setup rolling fold data loaders."""
-        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}_rolling"
+        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}_{self.config.target_type}_rolling"
         data_dir = Path(self.config.data_dir) / data_dir_name
         
         print(f"Setting up rolling folds from {data_dir}")
