@@ -395,6 +395,8 @@ def main():
                        help="Dataset directory")
     parser.add_argument("--batch-size", type=int, default=64,
                        help="Batch size")
+    parser.add_argument("--device", type=str, default=None,
+                       help="Device to use (cpu/cuda)")
     parser.add_argument("--ticker", type=str, default="AAPL",
                        help="Specific ticker to analyze")
     parser.add_argument("--output-dir", type=str, default="comparison_results",
@@ -410,7 +412,8 @@ def main():
     comparator = ModelComparator(
         model_path=args.model,
         data_dir=args.data_dir,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        device=args.device
     )
     
     try:
