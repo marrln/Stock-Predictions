@@ -392,6 +392,14 @@ def train_model(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
+    # Extract dataset metadata for checkpointing
+    train_dataset = train_loader.dataset if hasattr(train_loader, 'dataset') else None
+    dataset_info = {}
+    if train_dataset is not None:
+        dataset_info["target_type"] = getattr(train_dataset, 'target_type', 'unknown')
+        dataset_info["feature_cols"] = getattr(train_dataset, 'feature_cols', [])
+        dataset_info["n_features"] = train_dataset.X.shape[-1] if hasattr(train_dataset, 'X') else None
+    
     # Setup optimizer
     if optimizer_kwargs is None:
         optimizer_kwargs = {}
@@ -542,6 +550,10 @@ def train_model(
                 "expansion_factor": getattr(model, "expansion_factor", 1),
             }
             
+            # Include dataset configuration
+            if dataset_info:
+                extra["dataset_info"] = dataset_info
+            
             if unscaled_metrics is not None:
                 extra["val_metrics_unscaled"] = unscaled_metrics
             
@@ -600,6 +612,10 @@ def train_model(
         "ticker_emb_dim": model.ticker_emb_dim,
         "expansion_factor": getattr(model, "expansion_factor", 1),
     }
+    
+    # Include dataset configuration
+    if dataset_info:
+        final_extra["dataset_info"] = dataset_info
     
     if y_scaler is not None:
         final_extra["y_scaler_info"] = _serialize_scaler(y_scaler)
