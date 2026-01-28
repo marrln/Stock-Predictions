@@ -197,8 +197,8 @@ def main():
                 f"VAL: Loss={loss:.4f}, "
                 f"MAE={mae:.4f}, "
                 f"RMSE={rmse:.4f}, "
-                f"DirAcc={dir_acc*100:.2%}%, "
-                f"R2={r2*100:.2%}%, "
+                f"DirAcc={dir_acc:.2%}, "
+                f"R2={r2:.2%}, "
                 f"Sharpe={sharpe:.4f}"
             )
             print(f"Best epoch: {result.best_epoch}")
