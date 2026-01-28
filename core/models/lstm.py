@@ -46,18 +46,23 @@ class PriceNewsLSTMReg(nn.Module):
         self.num_tickers = num_tickers
         self.ticker_emb_dim = ticker_emb_dim if num_tickers is not None else 0
         
-        # Feature expansion layer
-        expanded_size = input_size * expansion_factor
-        self.feature_expansion = nn.Sequential(
-            nn.Linear(input_size, expanded_size),
-            nn.BatchNorm1d(expanded_size),
-            nn.ReLU(),
-            nn.Dropout(dropout * 0.5),
-        )
+        # Feature expansion layer (skip if expansion_factor == 1)
+        if expansion_factor > 1:
+            expanded_size = input_size * expansion_factor
+            self.feature_expansion = nn.Sequential(
+                nn.Linear(input_size, expanded_size),
+                nn.BatchNorm1d(expanded_size),
+                nn.Tanh(),  # Tanh preserves negative values (better for financial data than ReLU)
+                nn.Dropout(dropout * 0.5),
+            )
+            lstm_input_size = expanded_size
+        else:
+            self.feature_expansion = None
+            lstm_input_size = input_size
         
-        # LSTM layer (now receives expanded features)
+        # LSTM layer (receives either raw or expanded features)
         self.lstm = nn.LSTM(
-            input_size=expanded_size,
+            input_size=lstm_input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -97,7 +102,8 @@ class PriceNewsLSTMReg(nn.Module):
             elif 'bias' in name:
                 nn.init.constant_(param, 0.0)
         # Initialize expansion layer weights if present
-        nn.init.kaiming_normal_(self.feature_expansion[0].weight, nonlinearity='relu')
+        if self.feature_expansion is not None:
+            nn.init.xavier_uniform_(self.feature_expansion[0].weight)  # Changed from kaiming (ReLU) to xavier (Tanh)
     
     def forward(
         self, 
@@ -114,13 +120,18 @@ class PriceNewsLSTMReg(nn.Module):
             Predicted values of shape (batch_size,)
         """
         batch_size, seq_len, _ = x.shape
-        # Apply feature expansion
-        x_reshaped = x.view(-1, self.input_size)  # (batch_size * seq_len, input_size)
-        x_expanded = self.feature_expansion(x_reshaped)
-        x_expanded = x_expanded.view(batch_size, seq_len, -1)
         
-        # LSTM forward pass (now with expanded features)
-        lstm_out, _ = self.lstm(x_expanded)  # (batch_size, seq_len, hidden_size * directions)
+        # Apply feature expansion if present
+        if self.feature_expansion is not None:
+            x_reshaped = x.view(-1, self.input_size)  # (batch_size * seq_len, input_size)
+            x_expanded = self.feature_expansion(x_reshaped)
+            x_expanded = x_expanded.view(batch_size, seq_len, -1)
+            lstm_input = x_expanded
+        else:
+            lstm_input = x
+        
+        # LSTM forward pass
+        lstm_out, _ = self.lstm(lstm_input)  # (batch_size, seq_len, hidden_size * directions)
         
         # Pooling
         if self.pooling == 'last':
