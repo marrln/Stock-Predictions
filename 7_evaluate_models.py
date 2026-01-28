@@ -44,6 +44,8 @@ def main():
                        help="Output directory for results")
     parser.add_argument("--no-baselines", action="store_true",
                        help="Skip baseline evaluation")
+    parser.add_argument("--device", type=str, choices=["cpu", "cuda", "mps"], default="cpu",
+                       help="Device to use for evaluation (default: cpu)")
     
     args = parser.parse_args()
     
@@ -54,7 +56,8 @@ def main():
         result = evaluate_single_checkpoint(
             checkpoint_path=args.single_model,
             data_dir=args.data_dir,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            device=args.device
         )
         
         metrics = result.get("metrics", {})
@@ -71,12 +74,13 @@ def main():
             data_dir=args.data_dir,
             output_dir=args.output_dir,
             batch_size=args.batch_size,
-            include_baselines=not args.no_baselines
+            include_baselines=not args.no_baselines,
+            device=args.device
         )
         
         if best_name:
             print(f"\nNext step:")
-            print(f"  python compare_models.py --model experiments/{best_name}/best.pt --data-dir {args.data_dir}")
+            print(f"  python 8_compare_models.py --model experiments/{best_name}/best.pt --data-dir {args.data_dir}")
 
 
 if __name__ == "__main__":
