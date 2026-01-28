@@ -43,7 +43,7 @@ def load_news_stats() -> Set[str]:
     if not os.path.exists(NEWS_STATS_JSON):
         print(f"[WARN] News stats not found: {NEWS_STATS_JSON} - ticker filtering will be skipped")
         return set()
-    with open(NEWS_STATS_JSON, 'r') as f:
+    with open(NEWS_STATS_JSON, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return {k.strip().upper() for k in data.keys()}
 
@@ -111,7 +111,7 @@ def main():
         print(f"[ERROR] Metadata JSON not found: {METADATA_JSON}")
         return
 
-    with open(METADATA_JSON, 'r') as f:
+    with open(METADATA_JSON, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
 
     removed_metadata_keys = []
@@ -196,7 +196,7 @@ def main():
 
     # Save updated metadata JSON atomically
     tmp = METADATA_JSON + '.tmp'
-    with open(tmp, 'w') as f:
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, separators=(',', ':'), indent=None)
     os.replace(tmp, METADATA_JSON)
 
