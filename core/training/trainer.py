@@ -14,7 +14,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler
 
 from ..checkpoint import save_checkpoint
-from .metrics import compute_regression_metrics
+from .metrics import compute_regression_metrics, compute_metrics_auto, compute_trading_metrics
 
 
 def unpack_batch(batch: Any) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -123,8 +123,16 @@ def evaluate(
     loader: torch.utils.data.DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
+    target_type: Optional[str] = None,
 ) -> Tuple[float, Dict[str, float]]:
     """Evaluate model on a loader.
+    
+    Args:
+        model: Model to evaluate
+        loader: DataLoader
+        loss_fn: Loss function
+        device: Device to use
+        target_type: Type of target for automatic metric selection (if None, tries to detect)
     
     Returns:
         Tuple of (average_loss, metrics_dict)
@@ -134,6 +142,10 @@ def evaluate(
     all_preds: List[torch.Tensor] = []
     all_targets: List[torch.Tensor] = []
     total_samples = 0
+    
+    # Try to detect target_type from dataset if not provided
+    if target_type is None and hasattr(loader.dataset, 'target_type'):
+        target_type = loader.dataset.target_type
     
     with torch.no_grad():
         for batch in loader:
@@ -160,9 +172,15 @@ def evaluate(
     all_preds = torch.cat(all_preds, dim=0).numpy()
     all_targets = torch.cat(all_targets, dim=0).numpy()
     
-    # Compute metrics
+    # Compute metrics using automatic selection based on target type
     avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
-    metrics = compute_regression_metrics(all_preds, all_targets, include_r2=True, include_sharpe=True)
+    
+    if target_type:
+        # Use automatic metric selection
+        metrics = compute_metrics_auto(all_preds, all_targets, target_type=target_type)
+    else:
+        # Fallback to old behavior
+        metrics = compute_regression_metrics(all_preds, all_targets, include_r2=True, include_sharpe=False)
     
     return avg_loss, metrics
 
@@ -576,16 +594,36 @@ def train_model(
         
         # Log progress
         if verbose:
+            # Get target type for better metric selection
+            target_type = getattr(train_loader.dataset, 'target_type', None)
+            
+            # Base metrics (always shown)
             log_msg = (
                 f"Epoch {epoch:03d} | "
                 f"Train Loss: {train_loss:.5f} | "
                 f"Val Loss: {val_loss:.5f} | "
                 f"Val MAE: {history['val_mae'][-1]:.5f} | "
                 f"Val RMSE: {history['val_rmse'][-1]:.5f} | "
-                f"Val R2: {history.get('val_r2', [0.0])[-1]:.4f} | "
-                f"Val Sharpe: {history.get('val_sharpe_pred', [0.0])[-1]:.4f} | "
-                f"LR: {current_lr:.2e}"
             )
+            
+            # Add directional accuracy (most important for returns/pct_change)
+            if 'val_dir_acc' in history and len(history['val_dir_acc']) > 0:
+                dir_acc = history['val_dir_acc'][-1] * 100  # Convert to percentage
+                log_msg += f"DirAcc: {dir_acc:.2f}% | "
+            
+            # Add target-specific metrics
+            if target_type in ['return', 'pct_change', 'log_return']:
+                # For returns: show IC and trading metrics if available
+                if val_metrics.get('ic_spearman') is not None:
+                    log_msg += f"IC: {val_metrics['ic_spearman']:.4f} | "
+                if val_metrics.get('strategy_sharpe_annual') is not None:
+                    log_msg += f"StratSharpe: {val_metrics['strategy_sharpe_annual']:.2f} | "
+            else:
+                # For prices: show R²
+                if 'val_r2' in history and len(history.get('val_r2', [])) > 0:
+                    log_msg += f"R²: {history['val_r2'][-1]:.4f} | "
+            
+            log_msg += f"LR: {current_lr:.2e}"
             print(log_msg)
         
         # Early stopping
