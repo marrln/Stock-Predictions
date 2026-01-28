@@ -14,6 +14,7 @@ from .dataset import TimeSeriesDataset
 from .preprocessing import (
     build_dataset_all_tickers,
     split_time_based_rolling,
+    split_time_based_expanding,
     compute_scalers_from_train,
     apply_scaler_to_dataset,
 )
@@ -226,15 +227,29 @@ def build_and_save_rolling_folds(
     val_days: int = 125,
     test_days: Optional[int] = 125,
     step_days: int = 125,
+    market_csv: Optional[str] = None,
+    mode: str = "rolling",
 ) -> List[Tuple[TimeSeriesDataset, TimeSeriesDataset, Optional[TimeSeriesDataset]]]:
-    """Build rolling fold datasets from source data and save to disk."""
-    print(f"Building rolling fold datasets for {len(tickers)} tickers")
+    """Build rolling or expanding fold datasets from source data and save to disk.
+    
+    Args:
+        mode: 'rolling' (fixed window) or 'expanding' (growing training set)
+    """
+    fold_type = "expanding" if mode == "expanding" else "rolling"
+    print(f"Building {fold_type} fold datasets for {len(tickers)} tickers")
+    
+    # Automatically disable target scaling for pct_change, return, and log_return targets
+    # (they're already normalized and scaling defeats the purpose)
+    if target_type in ["pct_change", "return", "log_return"] and target_scaling:
+        print(f"⚠️  Disabling target scaling for '{target_type}' (already normalized)")
+        target_scaling = False
     
     ds_dict, info, meta = build_dataset_all_tickers(
         tickers=tickers,
         seq_len=seq_len,
         sentiment_fill=sentiment_fill,
         target_type=target_type,
+        market_csv=market_csv,
     )
     
     if not ds_dict:
@@ -255,16 +270,27 @@ def build_and_save_rolling_folds(
         expected_folds = (D - window_len) // step_days + 1
     print(f"Unique trading days: {D}, expected folds (approx): {expected_folds}")
 
-    folds = split_time_based_rolling(
-        meta, X_all, y_all,
-        train_days=train_days,
-        val_days=val_days,
-        test_days=test_days,
-        seq_len=seq_len,
-        step_days=step_days,
-    )
+    # Choose split function based on mode
+    if mode == "expanding":
+        folds = split_time_based_expanding(
+            meta, X_all, y_all,
+            initial_train_days=train_days,
+            val_days=val_days,
+            test_days=test_days,
+            seq_len=seq_len,
+            step_days=step_days,
+        )
+    else:  # rolling (default)
+        folds = split_time_based_rolling(
+            meta, X_all, y_all,
+            train_days=train_days,
+            val_days=val_days,
+            test_days=test_days,
+            seq_len=seq_len,
+            step_days=step_days,
+        )
     
-    print(f"Created {len(folds)} rolling folds")
+    print(f"Created {len(folds)} {fold_type} folds")
     
     processed_folds = []
     feature_cols = info.get("feature_cols", [])
@@ -389,8 +415,14 @@ def load_or_build_rolling_folds(
     val_days: int = 125,
     test_days: Optional[int] = 125,
     step_days: int = 125,
+    market_csv: Optional[str] = None,
+    mode: str = "rolling",
 ) -> List[Tuple[DataLoader, DataLoader, Optional[DataLoader]]]:
-    """Load pre-saved rolling folds or build from source."""
+    """Load pre-saved rolling/expanding folds or build from source.
+    
+    Args:
+        mode: 'rolling' (fixed window) or 'expanding' (growing training set)
+    """
     if not force_build:
         try:
             return load_rolling_folds(save_dir, batch_size, num_workers)
@@ -411,6 +443,8 @@ def load_or_build_rolling_folds(
         val_days=val_days,
         test_days=test_days,
         step_days=step_days,
+        market_csv=market_csv,
+        mode=mode,
     )
     
     return load_rolling_folds(save_dir, batch_size, num_workers)
