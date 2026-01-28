@@ -54,7 +54,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Train Improved LSTM financial model (normalized prices)")
 
     # Data & preprocessing
-    parser.add_argument("--data", default="processed_data/data", help="Path to the folder that contains stock CSV files")
+    parser.add_argument("--data", default="processed_data/csv", help="Path to the folder that contains stock CSV files")
     parser.add_argument("--tickers", type=str, default="AAPL,MSFT,NVDA", help="Comma-separated list of ticker symbols (e.g., AAPL,MSFT,GOOGL)")
     parser.add_argument("--seq-len", type=int, default=8, help="Sequence length (timesteps)")
     parser.add_argument("--train-split-end", type=float, default=0.70, help="Train split fraction end")
