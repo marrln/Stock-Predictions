@@ -15,6 +15,56 @@ import torch
 from torchsummary import summary
 
 
+def reconstruct_prices_from_pct_change(
+    pct_changes: np.ndarray,
+    dates: List[str],
+    ticker: str,
+    price_history_path: str = "Stock_price/full_history"
+) -> np.ndarray:
+    """Reconstruct price series from percent changes.
+    
+    Args:
+        pct_changes: Array of percent changes (e.g., 2.5 means 2.5% increase)
+        dates: List of date strings corresponding to pct_changes
+        ticker: Ticker symbol
+        price_history_path: Path to directory containing price CSVs
+        
+    Returns:
+        Reconstructed price array
+    """
+    from pathlib import Path
+    
+    # Load historical prices
+    csv_path = Path(price_history_path) / f"{ticker}.csv"
+    if not csv_path.exists():
+        print(f"Warning: Cannot reconstruct prices - {csv_path} not found")
+        return pct_changes  # Return pct_changes as fallback
+    
+    df = pd.read_csv(csv_path)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date')
+    
+    # Get the starting price (price at day before first prediction)
+    first_date = pd.to_datetime(dates[0])
+    mask = df['Date'] < first_date
+    
+    if mask.sum() == 0:
+        print(f"Warning: No historical price before {first_date}")
+        return pct_changes
+    
+    # Use the last available price before prediction period as starting point
+    start_price = df.loc[mask, 'Close'].iloc[-1]
+    
+    # Reconstruct prices: price[t] = price[t-1] * (1 + pct_change[t]/100)
+    prices = np.zeros(len(pct_changes))
+    prices[0] = start_price * (1 + pct_changes[0] / 100.0)
+    
+    for i in range(1, len(pct_changes)):
+        prices[i] = prices[i-1] * (1 + pct_changes[i] / 100.0)
+    
+    return prices
+
+
 def plot_training_history(
     history: Dict[str, list],
     save_path: Optional[Path] = None,
@@ -172,8 +222,46 @@ def plot_ticker_performance(
         ax.set_ylabel('Price ($)')
         ax.set_title(f'{ticker} - Price Prediction')
 
+    elif target_type == "pct_change":
+        # Plot percent change similar to returns but with % scale
+        ax.plot(dates_dt, true_values, label='True % Change', color='black', linewidth=2, alpha=0.8)
+
+        if predicted_series is not None:
+            if isinstance(predicted_series, dict):
+                colors = plt.cm.tab10(np.linspace(0, 1, len(predicted_series)))
+                for (name, series), color in zip(predicted_series.items(), colors):
+                    ax.plot(dates_dt, series, label=name, color=color, linewidth=1.5, alpha=0.7)
+                    if isinstance(series, (list, np.ndarray)):
+                        errors = np.asarray(series) - np.asarray(true_values)
+            else:
+                ax.plot(dates_dt, predicted_series, label='Predicted % Change', color='tab:orange', linewidth=1.5, alpha=0.7)
+                errors = np.asarray(predicted_series) - np.asarray(true_values)
+
+        ax.axhline(0, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
+        ax.set_ylabel('Percent Change (%)')
+        ax.set_title(f'{ticker} - Daily % Change Prediction')
+        
+        # Add sign markers if requested
+        if show_sign_markers and predicted_series is not None:
+            if not isinstance(predicted_series, dict):
+                pred_arr = np.asarray(predicted_series)
+                true_arr = np.asarray(true_values)
+                sign_correct = np.sign(pred_arr) == np.sign(true_arr)
+                
+                correct_dates = [d for d, c in zip(dates_dt, sign_correct) if c]
+                correct_vals = [p for p, c in zip(pred_arr, sign_correct) if c]
+                incorrect_dates = [d for d, c in zip(dates_dt, sign_correct) if not c]
+                incorrect_vals = [p for p, c in zip(pred_arr, sign_correct) if not c]
+                
+                ax.scatter(correct_dates, correct_vals, color='green', s=15, alpha=0.5, label='Sign Correct', zorder=5)
+                ax.scatter(incorrect_dates, incorrect_vals, color='red', s=15, alpha=0.5, label='Sign Incorrect', zorder=5)
+
     else:
-        ax.plot(dates_dt, true_values, label='True Returns', color='black', linewidth=1.5, alpha=0.8, marker='o', markersize=2)
+        # Handle log_return vs regular return labeling
+        is_log_return = target_type == "log_return"
+        label_suffix = "Log Returns" if is_log_return else "Returns"
+        
+        ax.plot(dates_dt, true_values, label=f'True {label_suffix}', color='black', linewidth=1.5, alpha=0.8, marker='o', markersize=2)
         ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
 
         # Draw predictions
@@ -185,11 +273,11 @@ def plot_ticker_performance(
                     if isinstance(series, (list, np.ndarray)):
                         errors = np.asarray(series) - np.asarray(true_values)
             else:
-                ax.plot(dates_dt, predicted_series, label='Predicted Returns', color='tab:orange', linewidth=1.5, alpha=0.7, marker='s', markersize=2)
+                ax.plot(dates_dt, predicted_series, label=f'Predicted {label_suffix}', color='tab:orange', linewidth=1.5, alpha=0.7, marker='s', markersize=2)
                 errors = np.asarray(predicted_series) - np.asarray(true_values)
 
-        ax.set_ylabel('Returns')
-        ax.set_title(f'{ticker} - Return Prediction')
+        ax.set_ylabel('Log Returns' if is_log_return else 'Returns')
+        ax.set_title(f'{ticker} - {"Log Return" if is_log_return else "Return"} Prediction')
 
         # Optional sign markers
         if show_sign_markers and predicted_series is not None:
@@ -233,84 +321,177 @@ def plot_rolling_predictions(
     fold_data: List[Dict[str, Any]],
     save_path: Optional[Path] = None,
     show: bool = False,
-    figsize: Tuple[int, int] = (16, 8),
+    figsize: Tuple[int, int] = (16, 10),
     target_type: str = "return"
 ) -> None:
     """Plot predictions across all rolling folds showing the full timeline.
     
+    Each fold gets its own subplot, stacked vertically, showing train/val/test splits.
+    Shows full historical true values as context on all subplots.
+    
     Args:
         ticker: Ticker symbol
         fold_data: List of dicts with keys: 'dates', 'true_values', 'predictions', 
-                   'split' ('train', 'val', 'test')
+                   'split' ('train', 'val', 'test'), 'fold_idx'
         save_path: Optional path to save the figure
         show: Whether to display the figure
         figsize: Figure size
         target_type: 'return' or 'price' to determine plot style
     """
-    fig, ax = plt.subplots(figsize=figsize)
-    
+    # Define colors for different splits
     split_colors = {
-        'train': 'lightblue',
-        'val': 'lightcoral',
-        'test': 'lightgreen'
+        'train': '#E3F2FD',  # Light blue
+        'val': '#FFF3E0',     # Light orange
+        'test': '#E8F5E9'     # Light green
     }
     
-    all_dates = []
-    all_true = []
-    all_pred = []
+    # Group data by fold
+    folds_dict = {}
+    for data in fold_data:
+        fold_idx = data['fold_idx']
+        if fold_idx not in folds_dict:
+            folds_dict[fold_idx] = []
+        folds_dict[fold_idx].append(data)
     
-    for fold_idx, fold in enumerate(fold_data):
-        dates_dt = pd.to_datetime(fold['dates'])
-        true_vals = fold['true_values']
-        preds = fold['predictions']
-        split = fold.get('split', 'val')
-        
-        all_dates.extend(dates_dt)
-        all_true.extend(true_vals)
-        all_pred.extend(preds)
-        
-        color = split_colors.get(split, 'lightgray')
-        
-        if fold_idx == 0 or fold.get('split') != fold_data[fold_idx-1].get('split'):
-            label = f'{split.capitalize()}'
-            ax.axvspan(dates_dt.min(), dates_dt.max(), alpha=0.2, color=color, label=label)
-        else:
-            ax.axvspan(dates_dt.min(), dates_dt.max(), alpha=0.2, color=color)
+    n_folds = len(folds_dict)
+    if n_folds == 0:
+        return
     
-    all_dates_sorted = sorted(set(all_dates))
+    # Collect ALL historical true values across all folds for context
+    all_hist_dates = []
+    all_hist_true = []
+    for data in fold_data:
+        all_hist_dates.extend(pd.to_datetime(data['dates']))
+        all_hist_true.extend(data['true_values'])
     
+    # Create a dict for quick lookup of true values by date
+    hist_date_to_true = {}
+    for d, v in zip(all_hist_dates, all_hist_true):
+        hist_date_to_true[d] = v
+    
+    all_hist_dates_sorted = sorted(set(all_hist_dates))
+    hist_true_sorted = [hist_date_to_true[d] for d in all_hist_dates_sorted]
+    
+    # Create stacked subplots - one per fold
+    fig, axes = plt.subplots(n_folds, 1, figsize=(figsize[0], figsize[1] * n_folds / 4), 
+                             sharex=True, sharey=True)
+    
+    # Handle single fold case
+    if n_folds == 1:
+        axes = [axes]
+    
+    # Determine label suffix based on target type
+    is_log_return = target_type == "log_return"
+    label_suffix = "Log Returns" if is_log_return else "Returns"
+    ylabel = 'Log Returns' if is_log_return else 'Returns'
     if target_type == "price" or target_type == "close":
-        date_to_true = dict(zip(all_dates, all_true))
-        date_to_pred = dict(zip(all_dates, all_pred))
-        
-        sorted_true = [date_to_true.get(d, np.nan) for d in all_dates_sorted]
-        sorted_pred = [date_to_pred.get(d, np.nan) for d in all_dates_sorted]
-        
-        ax.plot(all_dates_sorted, sorted_true, label='True Price', color='black', linewidth=2, alpha=0.9, zorder=3)
-        ax.plot(all_dates_sorted, sorted_pred, label='Predicted Price', color='tab:orange', linewidth=1.5, alpha=0.8, zorder=2)
-        
-        ax.set_ylabel('Price ($)')
-        ax.set_title(f'{ticker} - Rolling Window Price Predictions')
-        
-    else:
-        date_to_true = dict(zip(all_dates, all_true))
-        date_to_pred = dict(zip(all_dates, all_pred))
-        
-        sorted_true = [date_to_true.get(d, np.nan) for d in all_dates_sorted]
-        sorted_pred = [date_to_pred.get(d, np.nan) for d in all_dates_sorted]
-        
-        ax.plot(all_dates_sorted, sorted_true, label='True Returns', color='black', linewidth=1.5, alpha=0.9, marker='o', markersize=3, zorder=3)
-        ax.plot(all_dates_sorted, sorted_pred, label='Predicted Returns', color='tab:orange', linewidth=1.5, alpha=0.8, marker='s', markersize=3, zorder=2)
-        ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5, zorder=1)
-        
-        ax.set_ylabel('Returns')
-        ax.set_title(f'{ticker} - Rolling Window Return Predictions')
+        ylabel = 'Price ($)'
+        label_suffix = "Price"
+    elif target_type == "pct_change":
+        ylabel = 'Percent Change (%)'
+        label_suffix = "% Change"
     
-    ax.set_xlabel('Date')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    plt.xticks(rotation=45)
+    split_labels_shown = set()
+    
+    # Plot each fold in its own subplot
+    for ax_idx, fold_idx in enumerate(sorted(folds_dict.keys())):
+        ax = axes[ax_idx]
+        fold_splits = folds_dict[fold_idx]
+        
+        # Sort splits by time order: train, val, test
+        split_order = {'train': 0, 'val': 1, 'test': 2}
+        fold_splits.sort(key=lambda x: split_order.get(x['split'], 99))
+        
+        # FIRST: Plot the full historical true values as gray background on ALL folds
+        # This shows the complete market context even for dates this fold doesn't predict
+        ax.plot(all_hist_dates_sorted, hist_true_sorted, 
+               color='lightgray', linewidth=0.6, alpha=0.5, zorder=1, 
+               label='Full Historical Context' if fold_idx == 0 else None)
+        
+        # Collect dates for this fold's data
+        fold_dates = []
+        fold_true = []
+        fold_pred = []
+        
+        # Draw background regions and collect data for each split
+        for data in fold_splits:
+            dates_dt = pd.to_datetime(data['dates'])
+            split_name = data['split']
+            
+            fold_dates.extend(dates_dt)
+            fold_true.extend(data['true_values'])
+            fold_pred.extend(data['predictions'])
+            
+            # Background shading for split type
+            color = split_colors.get(split_name, '#F5F5F5')
+            label = None
+            if split_name not in split_labels_shown:
+                label = f'{split_name.capitalize()} Set'
+                split_labels_shown.add(split_name)
+            
+            ax.axvspan(dates_dt.min(), dates_dt.max(), alpha=0.3, color=color, label=label)
+            
+            # Add vertical separator between splits
+            if split_name != 'train':
+                ax.axvline(x=dates_dt.min(), color='gray', linestyle=':', linewidth=1.5, alpha=0.5)
+        
+        # Sort data by date for plotting THIS FOLD'S data
+        fold_dates_sorted = sorted(set(fold_dates))
+        date_to_true = dict(zip(fold_dates, fold_true))
+        date_to_pred = dict(zip(fold_dates, fold_pred))
+        
+        sorted_true = [date_to_true.get(d, np.nan) for d in fold_dates_sorted]
+        sorted_pred = [date_to_pred.get(d, np.nan) for d in fold_dates_sorted]
+        
+        # Plot THIS fold's true values and predictions (on top of historical background)
+        if target_type == "price" or target_type == "close":
+            ax.plot(fold_dates_sorted, sorted_true, label='True Price (This Fold)' if fold_idx == 0 else None, 
+                   color='black', linewidth=1.0, alpha=0.9, zorder=3)
+            ax.plot(fold_dates_sorted, sorted_pred, label='Predicted Price' if fold_idx == 0 else None, 
+                   color='tab:orange', linewidth=0.8, alpha=0.8, zorder=2)
+        elif target_type == "pct_change":
+            ax.plot(fold_dates_sorted, sorted_true, label=f'True {label_suffix} (This Fold)' if fold_idx == 0 else None, 
+                   color='black', linewidth=1.0, alpha=0.9, zorder=3)
+            ax.plot(fold_dates_sorted, sorted_pred, label=f'Predicted {label_suffix}' if fold_idx == 0 else None, 
+                   color='tab:orange', linewidth=0.8, alpha=0.8, zorder=2)
+            ax.axhline(0, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
+        else:
+            # Returns or log returns - thinner lines, no markers
+            ax.plot(fold_dates_sorted, sorted_true, label=f'True {label_suffix} (This Fold)' if fold_idx == 0 else None, 
+                   color='black', linewidth=0.8, alpha=0.9, zorder=3)
+            ax.plot(fold_dates_sorted, sorted_pred, label=f'Predicted {label_suffix}' if fold_idx == 0 else None, 
+                   color='tab:orange', linewidth=0.8, alpha=0.8, zorder=2)
+            ax.axhline(y=0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5, zorder=1)
+        
+        # Formatting
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        
+        # Set x-axis limits to show full timeline on all subplots
+        ax.set_xlim(all_hist_dates_sorted[0], all_hist_dates_sorted[-1])
+        
+        # Add fold label
+        ax.text(0.02, 0.95, f'Fold {fold_idx}', transform=ax.transAxes,
+               verticalalignment='top', fontsize=12, weight='bold',
+               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        # Only show legend on first subplot
+        if fold_idx == 0:
+            ax.legend(loc='upper right', fontsize=9)
+    
+    # Set x-label and rotate ticks on bottom subplot only (sharex handles the rest)
+    axes[-1].set_xlabel('Date')
+    plt.setp(axes[-1].xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # Overall title
+    title_suffix = "Log Return" if is_log_return else "Return"
+    if target_type == "price" or target_type == "close":
+        title_suffix = "Price"
+    elif target_type == "pct_change":
+        title_suffix = "% Change"
+    
+    fig.suptitle(f'{ticker} - Rolling Fold {title_suffix} Predictions', fontsize=14, weight='bold', y=0.995)
     
     plt.tight_layout()
     _handle_figure_output(fig, save_path, show)
@@ -413,6 +594,70 @@ def save_model_comparison(
     
     with open(save_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
+
+
+def plot_predictions_with_price_reconstruction(
+    dates: List[str],
+    true_pct_changes: np.ndarray,
+    pred_pct_changes: np.ndarray,
+    ticker: str,
+    price_history_path: str = "Stock_price/full_history",
+    save_path: Optional[Path] = None,
+    show: bool = False,
+    figsize: Tuple[int, int] = (14, 10)
+) -> None:
+    """Plot both percent changes and reconstructed prices side by side.
+    
+    Args:
+        dates: List of date strings
+        true_pct_changes: True percent changes
+        pred_pct_changes: Predicted percent changes
+        ticker: Ticker symbol
+        price_history_path: Path to historical price data
+        save_path: Optional path to save the figure
+        show: Whether to display the figure
+        figsize: Figure size
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    
+    dates_dt = pd.to_datetime(dates)
+    
+    # Top plot: Percent changes
+    ax1.plot(dates_dt, true_pct_changes, label='True % Change', 
+             color='black', linewidth=2, alpha=0.8)
+    ax1.plot(dates_dt, pred_pct_changes, label='Predicted % Change', 
+             color='tab:orange', linewidth=1.5, alpha=0.7)
+    ax1.axhline(0, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
+    ax1.set_ylabel('Percent Change (%)')
+    ax1.set_title(f'{ticker} - Daily % Change Predictions')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Bottom plot: Reconstructed prices
+    true_prices = reconstruct_prices_from_pct_change(
+        true_pct_changes, dates, ticker, price_history_path
+    )
+    pred_prices = reconstruct_prices_from_pct_change(
+        pred_pct_changes, dates, ticker, price_history_path
+    )
+    
+    ax2.plot(dates_dt, true_prices, label='True Price (reconstructed)', 
+             color='black', linewidth=2, alpha=0.8)
+    ax2.plot(dates_dt, pred_prices, label='Predicted Price (reconstructed)', 
+             color='tab:orange', linewidth=1.5, alpha=0.7)
+    ax2.set_ylabel('Price ($)')
+    ax2.set_xlabel('Date')
+    ax2.set_title(f'{ticker} - Reconstructed Price from % Change')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Format x-axis
+    ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    plt.tight_layout()
+    _handle_figure_output(fig, save_path, show)
 
 
 def _handle_figure_output(
