@@ -278,55 +278,102 @@ class RollingFoldVisualizer:
         self, 
         ticker: str, 
         output_dir: Path,
-        split: str = "test",
-        show_sign_markers: bool = True,
-        show_error_hist: bool = True,
+        split: str = "test"
     ):
-        """Create visualizations for a specific ticker across all folds."""
+        """Create visualizations for a specific ticker across all folds.
+        
+        Shows the full timeline with train/val/test splits properly colored.
+        """
         print(f"\nVisualizing {ticker} predictions across folds...")
         
-        fold_data = self.collect_predictions_for_ticker(ticker, split)
+        # Collect data from all splits to show full history
+        all_fold_data = []
         
-        if not fold_data:
+        for fold_idx in range(len(self.folds)):
+            train_loader, val_loader, test_loader = self.folds[fold_idx]
+            model = self.load_fold_model(fold_idx)
+            
+            if model is None:
+                continue
+            
+            # Collect train, val, and test for this fold
+            for split_name, loader in [('train', train_loader), ('val', val_loader), ('test', test_loader)]:
+                if loader is None:
+                    continue
+                
+                dataset = loader.dataset
+                if not hasattr(dataset, 'meta') or dataset.meta is None:
+                    continue
+                
+                meta = dataset.meta
+                if 'Ticker' not in meta.columns:
+                    continue
+                
+                ticker_mask = meta['Ticker'].str.upper() == ticker.upper()
+                indices = np.where(ticker_mask)[0]
+                
+                if len(indices) == 0:
+                    continue
+                
+                predictions, targets = get_predictions(model, loader, self.device)
+                
+                # Extract series for this ticker
+                ticker_preds_scaled = np.asarray(predictions)[indices]
+                ticker_targets_scaled = np.asarray(targets)[indices]
+                ticker_dates = meta.iloc[indices]['Date'].values
+                
+                # Inverse transform if scaler available
+                ds = loader.dataset
+                ticker_preds = ticker_preds_scaled
+                ticker_targets = ticker_targets_scaled
+                
+                scaler = getattr(ds, 'target_scaler', None)
+                if scaler is not None:
+                    try:
+                        if isinstance(scaler, dict):
+                            s = scaler.get(ticker)
+                            if s is not None:
+                                ticker_preds = s.inverse_transform(ticker_preds_scaled.reshape(-1, 1)).ravel()
+                                ticker_targets = s.inverse_transform(ticker_targets_scaled.reshape(-1, 1)).ravel()
+                        else:
+                            ticker_preds = scaler.inverse_transform(ticker_preds_scaled.reshape(-1, 1)).ravel()
+                            ticker_targets = scaler.inverse_transform(ticker_targets_scaled.reshape(-1, 1)).ravel()
+                    except Exception as e:
+                        pass
+                
+                all_fold_data.append({
+                    'fold_idx': fold_idx,
+                    'dates': ticker_dates,
+                    'true_values': ticker_targets,
+                    'predictions': ticker_preds,
+                    'split': split_name
+                })
+        
+        if not all_fold_data:
             print(f"No data found for ticker {ticker}")
             return
         
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Full timeline across folds
+        # Rolling timeline showing full history with fold boundaries
         plot_rolling_predictions(
             ticker=ticker,
-            fold_data=fold_data,
-            save_path=output_dir / f"{ticker}_rolling_{split}.png",
+            fold_data=all_fold_data,
+            save_path=output_dir / f"{ticker}_rolling_full.png",
             target_type=self.target_type
         )
-        print(f"Saved plot to {output_dir / f'{ticker}_rolling_{split}.png'}")
-
-        # Detailed time-series plot with sign markers and error histogram
-        # Concatenate data across folds by date
-        all_dates = []
-        all_true = []
-        all_pred = []
-        for fd in fold_data:
-            all_dates.extend(fd['dates'])
-            all_true.extend(fd['true_values'])
-            all_pred.extend(fd['predictions'])
-
-        # Sort by date
-        df = pd.DataFrame({'Date': pd.to_datetime(all_dates), 'True': all_true, 'Pred': all_pred}).sort_values('Date')
-
-        from core.utils.plotting import plot_ticker_performance
-        plot_ticker_performance(
-            ticker=ticker,
-            dates=df['Date'].tolist(),
-            true_values=df['True'].tolist(),
-            predicted_series=df['Pred'].tolist(),
-            save_path=output_dir / f"{ticker}_detailed_{split}.png",
-            target_type=self.target_type,
-            show_sign_markers=show_sign_markers,
-            show_error_hist=show_error_hist
-        )
-        print(f"Saved detailed plot to {output_dir / f'{ticker}_detailed_{split}.png'}")
+        print(f"Saved full history plot to {output_dir / f'{ticker}_rolling_full.png'}")
+        
+        # Also create a plot for just the requested split (test/val/train)
+        split_data = [d for d in all_fold_data if d['split'] == split]
+        if split_data:
+            plot_rolling_predictions(
+                ticker=ticker,
+                fold_data=split_data,
+                save_path=output_dir / f"{ticker}_rolling_{split}.png",
+                target_type=self.target_type
+            )
+            print(f"Saved {split} split plot to {output_dir / f'{ticker}_rolling_{split}.png'}")
     
     def visualize_fold_metrics(self, output_dir: Path, split: str = "test"):
         """Create visualization of metrics across folds."""
@@ -394,12 +441,11 @@ def main():
                        help="Output directory for plots")
     parser.add_argument("--batch-size", type=int, default=64,
                        help="Batch size")
+    parser.add_argument("--device", type=str, default="cpu",
+                       choices=["cpu", "cuda"],
+                       help="Device to use for inference")
     parser.add_argument("--all-metrics", action="store_true",
                        help="Also generate fold metrics comparison plot")
-    parser.add_argument("--sign-markers", action="store_true",
-                       help="Enable sign markers on detailed ticker plots")
-    parser.add_argument("--error-hist", action="store_true",
-                       help="Include error histogram on detailed ticker plots")
 
     args = parser.parse_args()
     
@@ -410,7 +456,8 @@ def main():
     visualizer = RollingFoldVisualizer(
         experiment_dir=args.experiment,
         data_dir=args.data_dir,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        device=args.device
     )
     
     try:
@@ -421,9 +468,7 @@ def main():
         visualizer.visualize_ticker(
             ticker=args.ticker,
             output_dir=output_dir,
-            split=args.split,
-            show_sign_markers=args.sign_markers,
-            show_error_hist=args.error_hist,
+            split=args.split
         )
         
         if args.all_metrics:
