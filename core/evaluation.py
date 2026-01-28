@@ -329,10 +329,11 @@ class ModelEvaluator:
 def evaluate_single_checkpoint(
     checkpoint_path: str | Path,
     data_dir: str | Path,
-    batch_size: int = 64
+    batch_size: int = 64,
+    device: str = "cpu"
 ) -> Dict[str, Any]:
     """Evaluate a single model checkpoint."""
-    evaluator = ModelEvaluator(data_dir, batch_size)
+    evaluator = ModelEvaluator(data_dir, batch_size, device=device)
     evaluator.setup()
     
     checkpoint_path = Path(checkpoint_path)
@@ -360,7 +361,8 @@ def compare_experiments(
     data_dir: str = "processed_data",
     output_dir: str = "experiments/comparison",
     batch_size: int = 64,
-    include_baselines: bool = True
+    include_baselines: bool = True,
+    device: str = "cpu"
 ) -> Tuple[str, Dict[str, Any]]:
     """Main function to compare all experiments and find the best model."""
     print("=" * 80)
@@ -368,7 +370,7 @@ def compare_experiments(
     print("=" * 80)
     
     # Initialize evaluator
-    evaluator = ModelEvaluator(data_dir, batch_size)
+    evaluator = ModelEvaluator(data_dir, batch_size, device=device)
     
     # Evaluate all experiments
     results = evaluator.evaluate_all_experiments(
