@@ -49,12 +49,14 @@ def main():
     data_group.add_argument("--all-tickers", action="store_true", help="Use all available tickers")
     data_group.add_argument("--max-tickers", type=int, default=None, help="Maximum number of tickers to use")
     data_group.add_argument("--seq-len", type=int, default=60, help="Sequence length")
-    data_group.add_argument("--target", choices=["return", "close"], default="return", help="Target to predict")
+    data_group.add_argument("--target", choices=["return", "log_return", "pct_change", "return_5d", "return_10d", "return_20d", "close"], default="return", help="Target to predict")
     data_group.add_argument("--train-days", type=int, default=900, help="Training window size in days")
     data_group.add_argument("--val-days", type=int, default=125, help="Validation window size in days")
     data_group.add_argument("--test-days", type=int, default=125, help="Test window size in days (None to disable)")
     data_group.add_argument("--step-days", type=int, default=125, help="Step size for rolling window")
     data_group.add_argument("--no-test", action="store_true", help="Disable test window in rolling splits")
+    data_group.add_argument("--fold-mode", choices=["rolling", "expanding"], default="rolling", 
+                            help="Fold strategy: 'rolling' (fixed window) or 'expanding' (growing train)")
     
     # Training mode
     mode_group = parser.add_argument_group("Mode")
@@ -76,7 +78,12 @@ def main():
     train_group.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     train_group.add_argument("--batch-size", type=int, default=32)
     train_group.add_argument("--epochs", type=int, default=100)
-    train_group.add_argument("--loss", choices=["mse", "huber", "l1"], default="huber")
+    train_group.add_argument("--loss", choices=["mse", "huber", "l1", "directional", "directional_mae", "sign_penalty", "quantile"], default="huber")
+    train_group.add_argument("--direction-weight", type=float, default=2.0, help="Direction penalty weight for directional loss")
+    train_group.add_argument("--direction-penalty", type=float, default=0.0, help="Additional penalty for wrong direction")
+    train_group.add_argument("--sign-penalty-alpha", type=float, default=1.0, help="Alpha for sign penalty loss")
+    train_group.add_argument("--quantile", type=float, default=0.5, help="Quantile for quantile loss")
+    train_group.add_argument("--patience", type=int, default=20, help="Early stopping patience")
     train_group.add_argument("--optimizer", choices=["adam", "adamw", "sgd"], default="adam")
     train_group.add_argument("--device", choices=["cpu", "cuda", "mps"], default=None, help="Device to use (auto-detected if not specified)")
     
@@ -84,6 +91,7 @@ def main():
     exp_group = parser.add_argument_group("Experiment")
     exp_group.add_argument("--name", type=str, help="Experiment name")
     exp_group.add_argument("--save-dir", type=str, default="experiments", help="Directory to save experiments")
+    exp_group.add_argument("--max-plot-tickers", type=int, default=7, help="Max number of tickers to plot per fold (0 = all tickers)")
     
     args = parser.parse_args()
     
@@ -124,6 +132,7 @@ def main():
                 val_days=args.val_days,
                 test_days=None if args.no_test else args.test_days,
                 step_days=args.step_days,
+                fold_mode=args.fold_mode,
                 hidden_size=args.hidden_size,
                 num_layers=args.num_layers,
                 dropout=args.dropout,
@@ -133,9 +142,15 @@ def main():
                 batch_size=args.batch_size,
                 epochs=args.epochs,
                 loss=args.loss,
+                direction_weight=args.direction_weight,
+                direction_penalty=args.direction_penalty,
+                sign_penalty_alpha=args.sign_penalty_alpha,
+                quantile=args.quantile,
+                early_stopping_patience=args.patience,
                 optimizer=args.optimizer,
                 experiment_name=args.name or f"single_{args.hidden_size}_{args.num_layers}",
                 save_dir=args.save_dir,
+                max_plot_tickers=args.max_plot_tickers,
             )
         else:
             # Will create multiple configs for sweep
@@ -186,21 +201,39 @@ def main():
             
             val_metrics = result.val_metrics
             dir_acc = val_metrics.get('dir_acc', float('nan'))
-            r2 = val_metrics.get('r2', float('nan'))
-            sharpe = val_metrics.get('sharpe_pred', float('nan'))
             
             loss = val_metrics.get("loss", float("nan"))
             mae = val_metrics.get("mae", float("nan"))
             rmse = val_metrics.get("rmse", float("nan"))
-
-            print(
-                f"VAL: Loss={loss:.4f}, "
-                f"MAE={mae:.4f}, "
-                f"RMSE={rmse:.4f}, "
-                f"DirAcc={dir_acc:.2%}, "
-                f"R2={r2:.2%}, "
-                f"Sharpe={sharpe:.4f}"
-            )
+            
+            # Check target type to show appropriate metrics
+            target_type = config.target_type if config else "unknown"
+            
+            if target_type in ["return", "log_return", "pct_change"]:
+                # For returns: show IC and strategy Sharpe
+                ic = val_metrics.get('ic_pearson', float('nan'))
+                strat_sharpe = val_metrics.get('strategy_sharpe', float('nan'))
+                
+                print(
+                    f"VAL: Loss={loss:.4f}, "
+                    f"MAE={mae:.4f}, "
+                    f"RMSE={rmse:.4f}, "
+                    f"DirAcc={dir_acc:.2%}, "
+                    f"IC={ic:.4f}, "
+                    f"StratSharpe={strat_sharpe:.2f}"
+                )
+            else:
+                # For prices: show R² 
+                r2 = val_metrics.get('r2', float('nan'))
+                
+                print(
+                    f"VAL: Loss={loss:.4f}, "
+                    f"MAE={mae:.4f}, "
+                    f"RMSE={rmse:.4f}, "
+                    f"DirAcc={dir_acc:.2%}, "
+                    f"R2={r2:.2%}"
+                )
+            
             print(f"Best epoch: {result.best_epoch}")
             print(f"Model saved to: {result.checkpoint_path}")
     print("\nTraining completed!")
