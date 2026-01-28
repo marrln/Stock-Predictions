@@ -9,6 +9,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import numpy as np
+import pandas as pd
 
 from .data.loaders import load_or_build_rolling_folds
 from .models.lstm import PriceNewsLSTMReg
@@ -37,10 +38,11 @@ class LSTMTrainer:
     
     def setup_data(self, force_rebuild: bool = False) -> None:
         """Setup rolling fold data loaders."""
-        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}_{self.config.target_type}_rolling"
+        fold_mode_suffix = "_expanding" if self.config.fold_mode == "expanding" else "_rolling"
+        data_dir_name = f"{len(self.config.tickers)}tickers_seq{self.config.seq_len}_{self.config.target_type}{fold_mode_suffix}"
         data_dir = Path(self.config.data_dir) / data_dir_name
         
-        print(f"Setting up rolling folds from {data_dir}")
+        print(f"Setting up {self.config.fold_mode} folds from {data_dir}")
         
         self.folds = load_or_build_rolling_folds(
             tickers=self.config.tickers,
@@ -55,6 +57,8 @@ class LSTMTrainer:
             val_days=self.config.val_days,
             test_days=self.config.test_days,
             step_days=self.config.step_days,
+            market_csv=self.config.market_csv,
+            mode=self.config.fold_mode,
         )
         
         print(f"Loaded {len(self.folds)} rolling folds")
@@ -158,6 +162,15 @@ class LSTMTrainer:
             
             plot_training_history(history, save_path=save_dir / "training_history.png")
             
+            # Generate evaluation plots for validation and test sets
+            self._generate_evaluation_plots(
+                train_loader=train_loader,
+                val_loader=val_loader,
+                test_loader=test_loader,
+                save_dir=save_dir,
+                fold_idx=fold_idx
+            )
+            
             best_epoch = history.get("best_epoch", -1)
             best_val_metrics = {
                 "loss": history.get("best_val", float("inf")),
@@ -181,6 +194,138 @@ class LSTMTrainer:
             results.append(result)
         
         return results
+    
+    def _generate_evaluation_plots(
+        self,
+        train_loader,
+        val_loader,
+        test_loader,
+        save_dir: Path,
+        fold_idx: int
+    ) -> None:
+        """Generate evaluation plots for validation and test sets.
+        
+        Creates prediction plots for each ticker similar to script 9.
+        """
+        from .training.trainer import get_predictions
+        from .utils.plotting import plot_ticker_performance
+        
+        try:
+            # Get target type for appropriate plotting
+            target_type = getattr(train_loader.dataset, 'target_type', 'return')
+            
+            # Get unique tickers if available
+            tickers = []
+            if hasattr(val_loader.dataset, 'meta') and val_loader.dataset.meta is not None:
+                if 'Ticker' in val_loader.dataset.meta.columns:
+                    tickers = val_loader.dataset.meta['Ticker'].unique().tolist()
+            
+            # If no tickers found, generate a single plot
+            if not tickers:
+                tickers = ['ALL']
+            
+            # Limit to configured max tickers to avoid too many plots
+            max_tickers = self.config.max_plot_tickers
+            if max_tickers > 0 and len(tickers) > max_tickers:
+                tickers = tickers[:max_tickers]
+            
+            # Generate plots for each ticker
+            for ticker in tickers:
+                # Validation set
+                try:
+                    self._plot_ticker_predictions(
+                        ticker=ticker,
+                        loader=val_loader,
+                        save_dir=save_dir,
+                        split_name='val',
+                        target_type=target_type
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not generate val plot for {ticker}: {e}")
+                
+                # Test set (if available)
+                if test_loader is not None:
+                    try:
+                        self._plot_ticker_predictions(
+                            ticker=ticker,
+                            loader=test_loader,
+                            save_dir=save_dir,
+                            split_name='test',
+                            target_type=target_type
+                        )
+                    except Exception as e:
+                        print(f"Warning: Could not generate test plot for {ticker}: {e}")
+                        
+        except Exception as e:
+            print(f"Warning: Could not generate evaluation plots: {e}")
+    
+    def _plot_ticker_predictions(
+        self,
+        ticker: str,
+        loader,
+        save_dir: Path,
+        split_name: str,
+        target_type: str
+    ) -> None:
+        """Generate prediction plot for a specific ticker and split."""
+        from .training.trainer import get_predictions
+        from .utils.plotting import plot_ticker_performance
+        import pandas as pd
+        
+        dataset = loader.dataset
+        
+        # Get predictions
+        predictions, targets = get_predictions(self.model, loader, self.device)
+        
+        # If ticker is 'ALL', use all data
+        if ticker == 'ALL':
+            ticker_preds = predictions
+            ticker_targets = targets
+            dates = dataset.meta['Date'].values if hasattr(dataset, 'meta') and dataset.meta is not None else None
+        else:
+            # Filter by ticker
+            if not hasattr(dataset, 'meta') or dataset.meta is None or 'Ticker' not in dataset.meta.columns:
+                return
+            
+            meta = dataset.meta
+            ticker_mask = meta['Ticker'].str.upper() == ticker.upper()
+            indices = np.where(ticker_mask)[0]
+            
+            if len(indices) == 0:
+                return
+            
+            ticker_preds = predictions[indices]
+            ticker_targets = targets[indices]
+            dates = meta.iloc[indices]['Date'].values
+        
+        # Handle scaling if needed
+        scaler = getattr(dataset, 'target_scaler', None)
+        if scaler is not None:
+            try:
+                if isinstance(scaler, dict):
+                    s = scaler.get(ticker)
+                    if s is not None:
+                        ticker_preds = s.inverse_transform(ticker_preds.reshape(-1, 1)).ravel()
+                        ticker_targets = s.inverse_transform(ticker_targets.reshape(-1, 1)).ravel()
+                else:
+                    ticker_preds = scaler.inverse_transform(ticker_preds.reshape(-1, 1)).ravel()
+                    ticker_targets = scaler.inverse_transform(ticker_targets.reshape(-1, 1)).ravel()
+            except Exception:
+                pass  # Use scaled values if inverse transform fails
+        
+        # Generate plot
+        save_path = save_dir / f"predictions_{split_name}_{ticker}.png"
+        
+        if dates is not None:
+            plot_ticker_performance(
+                ticker=ticker,
+                dates=dates,
+                true_values=ticker_targets,
+                predicted_series=ticker_preds,
+                save_path=save_path,
+                show=False,
+                target_type=target_type
+            )
     
     def evaluate(self, fold_idx: int = 0, loader_type: str = "test") -> Dict[str, float]:
         """Evaluate model on a specific fold and loader."""
