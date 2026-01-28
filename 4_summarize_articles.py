@@ -73,7 +73,8 @@ def chunked_article_loader(
         articles_path,
         dtype=dtypes,
         usecols=['Index', 'Article'],
-        chunksize=chunk_size
+        chunksize=chunk_size,
+        encoding='utf-8'
     ):
         if selected_indices is None:
             yield chunk
@@ -248,7 +249,7 @@ class ArticleSummarizationProcessor:
         
         # Save to CSV efficiently
         print(f"[INFO] Saving {len(df_results):,} summaries to {output_path}")
-        df_results.to_csv(output_path, index=False)
+        df_results.to_csv(output_path, index=False, encoding='utf-8')
 
         return df_results
 
