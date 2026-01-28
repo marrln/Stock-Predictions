@@ -14,6 +14,7 @@ from .dataset import TimeSeriesDataset
 # Default paths
 DEFAULT_SENTIMENT_CSV = "data_stats/daily_sentiment.csv"
 DEFAULT_PRICE_DIR = "Stock_price/full_history"
+DEFAULT_SPY_PATH = "data_stats/SPY.csv"  # Market benchmark (SPY ETF)
 
 
 def load_daily_sentiment(path: str = DEFAULT_SENTIMENT_CSV) -> pd.DataFrame:
@@ -34,6 +35,29 @@ def load_price_for_ticker(ticker: str, price_dir: str = DEFAULT_PRICE_DIR) -> pd
     
     df = pd.read_csv(p, parse_dates=["date"])
     return df.rename(columns={"date": "Date"})
+
+
+def load_market_data(spy_path: str = DEFAULT_SPY_PATH) -> pd.DataFrame:
+    """Load S&P 500 market data for market-relative features."""
+    if spy_path is None or not os.path.exists(spy_path):
+        if spy_path is not None:
+            print(f"Warning: Market data not found at {spy_path}, market features will be skipped")
+        return pd.DataFrame()
+    
+    df = pd.read_csv(spy_path)
+    
+    # Ensure Date column exists
+    if "Date" not in df.columns:
+        raise ValueError(f"SPY data must have a 'Date' column. Found columns: {df.columns.tolist()}")
+    
+    df["Date"] = pd.to_datetime(df["Date"], utc=True).dt.tz_localize(None).dt.normalize()
+    df = df.sort_values("Date").reset_index(drop=True)
+    
+    # Calculate market returns
+    df["market_return"] = df["close"].pct_change().fillna(0.0)
+    df["market_volatility"] = df["market_return"].rolling(20, min_periods=1).std().fillna(0.0)
+    
+    return df[["Date", "market_return", "market_volatility"]]
 
 
 def calculate_rsi(series: pd.Series, window: int = 14) -> pd.Series:
@@ -67,7 +91,8 @@ def make_features_for_ticker(
     price_df: pd.DataFrame,
     sentiment_df: pd.DataFrame,
     ticker: str,
-    sentiment_fill: str = "ffill"
+    sentiment_fill: str = "ffill",
+    market_data: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:
     """Merge price and sentiment and compute features for a ticker."""
     if sentiment_fill not in ("ffill", "zero"):
@@ -111,6 +136,40 @@ def make_features_for_ticker(
     vol_roll = df["volume"].rolling(window=20, min_periods=1).mean().shift(1)
     df["volume_spike"] = (df["volume"] > vol_roll * 1.5).astype(float).fillna(0.0)
     
+    # Market-relative features (if market data provided)
+    if market_data is not None:
+        market_subset = market_data.copy()
+        market_subset["Date"] = pd.to_datetime(market_subset["Date"]).dt.normalize()
+        df = pd.merge(df, market_subset, on="Date", how="left")
+        
+        # Forward fill market data for missing days (weekends/holidays), then SHIFT to avoid lookahead
+        df["market_return"] = df["market_return"].ffill().shift(1).fillna(0.0)
+        df["market_volatility"] = df["market_volatility"].ffill().shift(1).fillna(0.0)
+        
+        # Excess return (alpha): stock return minus market return (both already lagged)
+        df["excess_return"] = (df["return"].shift(1) - df["market_return"]).fillna(0.0)
+        
+        # Rolling beta estimation (20-day window, shifted)
+        rolling_cov = df["return"].rolling(window=20).cov(df["market_return"].shift(-1)).shift(1)
+        market_var = df["market_return"].shift(-1).rolling(window=20).var().shift(1)
+        df["beta_20"] = (rolling_cov / market_var.replace(0, np.nan)).fillna(1.0)
+        
+        # Volatility regime: high if market vol > 75th percentile (already lagged from shift(1) above)
+        vol_threshold = df["market_volatility"].quantile(0.75)
+        df["high_vol_regime"] = (df["market_volatility"] > vol_threshold).astype(float)
+        
+        # Relative volatility: stock vol / market vol (both already lagged)
+        stock_vol = df["return"].rolling(window=20, min_periods=1).std().shift(1)
+        df["rel_volatility"] = (stock_vol / df["market_volatility"].replace(0, np.nan)).fillna(1.0)
+    else:
+        # If no market data, fill with neutral values
+        df["market_return"] = 0.0
+        df["market_volatility"] = 0.0
+        df["excess_return"] = 0.0
+        df["beta_20"] = 1.0
+        df["high_vol_regime"] = 0.0
+        df["rel_volatility"] = 1.0
+    
     # Merge sentiment
     merged = pd.merge(
         df, 
@@ -128,6 +187,14 @@ def make_features_for_ticker(
     # Fill n_articles
     merged["n_articles"] = merged["n_articles"].fillna(0).astype(int)
     
+    # Sentiment momentum and change features (shifted to avoid lookahead)
+    merged["sentiment_change"] = merged["daily_sentiment"].diff().shift(1).fillna(0.0)
+    merged["sentiment_ma5"] = merged["daily_sentiment"].rolling(window=5, min_periods=1).mean().shift(1).fillna(0.0)
+    merged["sentiment_volatility"] = merged["daily_sentiment"].rolling(window=10, min_periods=1).std().shift(1).fillna(0.0)
+    
+    # News momentum: recent news activity (shifted)
+    merged["news_momentum"] = merged["n_articles"].rolling(window=5, min_periods=1).sum().shift(1).fillna(0.0)
+    
     # Add ticker identifier
     merged["Ticker"] = ticker
     
@@ -138,18 +205,73 @@ def create_sequences_from_ticker(
     df: pd.DataFrame,
     seq_len: int,
     feature_cols: List[str],
-    target_type: str = "return"
+    target_type: str = "return",
+    validate_targets: bool = True,
+    anomaly_threshold: float = 0.15
 ) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame]:
-    """Construct sequences from a single ticker DataFrame."""
+    """Construct sequences from a single ticker DataFrame.
+    
+    Args:
+        df: DataFrame with price and features
+        seq_len: Sequence length for LSTM input
+        feature_cols: Column names to use as features
+        target_type: Type of target to predict
+        validate_targets: If True, detect and warn about extreme targets
+        anomaly_threshold: Threshold for anomaly detection (default 0.15 = ±15%)
+    """
     df = df.copy().reset_index(drop=True)
+    ticker = df["Ticker"].iloc[0] if "Ticker" in df.columns else "Unknown"
     
     # Compute target
     if target_type == "return":
         df["target"] = df["close"].shift(-1) / df["close"] - 1
+    elif target_type == "log_return":
+        # Log return: ln(P_t+1 / P_t) - preferred in quant finance
+        # More symmetric, additive over time, better statistical properties
+        df["target"] = np.log(df["close"].shift(-1) / df["close"])
+    elif target_type == "pct_change":
+        # Percent change (same as return but expressed as percentage: -5.3%, +2.1%, etc.)
+        # This is more intuitive than return (which is decimal: -0.053, +0.021)
+        df["target"] = (df["close"].shift(-1) / df["close"] - 1) * 100.0
+    elif target_type == "return_5d":
+        # 5-day forward return (cumulative)
+        df["target"] = df["close"].shift(-5) / df["close"] - 1
+    elif target_type == "return_10d":
+        # 10-day forward return (cumulative)
+        df["target"] = df["close"].shift(-10) / df["close"] - 1
+    elif target_type == "return_20d":
+        # 20-day forward return (monthly)
+        df["target"] = df["close"].shift(-20) / df["close"] - 1
     elif target_type == "close":
         df["target"] = df["close"].shift(-1)
     else:
-        raise ValueError("target_type must be 'return' or 'close'")
+        raise ValueError(
+            "target_type must be one of: 'return', 'log_return', 'pct_change', 'return_5d', 'return_10d', 'return_20d', 'close'"
+        )
+    
+    # ANOMALY DETECTION: Validate targets before creating sequences
+    if validate_targets and target_type in ("return", "log_return", "pct_change"):
+        # For returns/log returns, check for extreme values (likely stock splits, data errors)
+        anomalies = df[df["target"].abs() > anomaly_threshold].copy()
+        
+        if not anomalies.empty:
+            print(f"\n⚠️  WARNING: Found {len(anomalies)} extreme {target_type} values for {ticker}")
+            print(f"   Threshold: ±{anomaly_threshold:.2%} | Max: {df['target'].max():.4f} | Min: {df['target'].min():.4f}")
+            
+            # Show details for first few anomalies
+            for idx, row in anomalies.head(5).iterrows():
+                date = row["Date"] if "Date" in row else "unknown"
+                target_val = row["target"]
+                close_curr = df.loc[idx-1, "close"] if idx > 0 else np.nan
+                close_next = row["close"]
+                print(f"   • {date}: {target_val:.4f} ({close_curr:.2f} → {close_next:.2f})")
+            
+            if len(anomalies) > 5:
+                print(f"   ... and {len(anomalies) - 5} more")
+            
+            print(f"   💡 This likely indicates stock splits or data errors.")
+            print(f"   💡 Consider using 'adjusted close' prices or removing these dates.")
+            print(f"   💡 Run check_all_ticker_anomalies.py to diagnose all tickers.\n")
     
     # Drop rows without target
     df = df[df["target"].notna()].reset_index(drop=True)
@@ -240,13 +362,15 @@ def build_dataset_all_tickers(
     feature_cols: Optional[List[str]] = None,
     target_type: str = "return",
     sentiment_fill: str = "ffill",
+    market_csv: Optional[str] = DEFAULT_SPY_PATH,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any], pd.DataFrame]:
     """Build X/y arrays for all specified tickers."""
     # Validate inputs
     if seq_len < 1:
         raise ValueError("seq_len must be at least 1")
-    if target_type not in ("return", "close"):
-        raise ValueError("target_type must be 'return' or 'close'")
+    valid_targets = ("return", "log_return", "pct_change", "return_5d", "return_10d", "return_20d", "close")
+    if target_type not in valid_targets:
+        raise ValueError(f"target_type must be one of: {valid_targets}")
     if not os.path.exists(price_dir):
         raise FileNotFoundError(f"Price directory not found: {price_dir}")
     
@@ -255,7 +379,13 @@ def build_dataset_all_tickers(
     if not sentiment_df.empty:
         sentiment_df["Date"] = pd.to_datetime(sentiment_df["Date"]).dt.normalize()
     
-    # Default features
+    # Load market data (S&P 500 benchmark)
+    market_data = None
+    if market_csv and os.path.exists(market_csv):
+        market_data = load_market_data(market_csv)
+        print(f"Loaded market data: {len(market_data)} trading days")
+    
+    # Default features (updated with new market and sentiment features)
     if feature_cols is None:
         feature_cols = [
             "return", "log_volume", "intraday_range", 
@@ -264,7 +394,12 @@ def build_dataset_all_tickers(
             "rsi_14", "bb_upper", "bb_lower", "roc_10",
             # Momentum and volume features
             "momentum_5", "momentum_10", "volume_spike",
-            "daily_sentiment", "n_articles"
+            # Market-relative features
+            "market_return", "market_volatility", "excess_return", 
+            "beta_20", "high_vol_regime", "rel_volatility",
+            # Sentiment features
+            "daily_sentiment", "n_articles", "sentiment_change",
+            "sentiment_ma5", "sentiment_volatility", "news_momentum"
         ]
     
     # If tickers not specified, use all from sentiment
@@ -280,7 +415,7 @@ def build_dataset_all_tickers(
     for ticker in tickers:
         try:
             price_df = load_price_for_ticker(ticker, price_dir)
-            feat_df = make_features_for_ticker(price_df, sentiment_df, ticker, sentiment_fill)
+            feat_df = make_features_for_ticker(price_df, sentiment_df, ticker, sentiment_fill, market_data)
             X_t, y_t, meta_t = create_sequences_from_ticker(feat_df, seq_len, feature_cols, target_type)
             
             if X_t.shape[0] > 0:
@@ -442,6 +577,156 @@ def split_time_based_rolling(
 
     if not folds:
         raise ValueError("No rolling folds could be created with the given parameters")
+
+    return folds
+
+
+def split_time_based_expanding(
+    meta: pd.DataFrame,
+    X: np.ndarray,
+    y: np.ndarray,
+    initial_train_days: int = 750,
+    val_days: int = 125,
+    test_days: Optional[int] = 125,
+    seq_len: int = 30,
+    step_days: int = 125,
+) -> List[
+    Tuple[
+        TimeSeriesDataset,
+        TimeSeriesDataset,
+        Optional[TimeSeriesDataset],
+    ]
+]:
+    """
+    Expanding window (anchored walk-forward) splits with purging and optional test window.
+    
+    Unlike rolling window, the training set GROWS with each fold:
+    - Fold 0: Train on first initial_train_days
+    - Fold 1: Train on first initial_train_days + step_days
+    - Fold 2: Train on first initial_train_days + 2*step_days
+    - etc.
+    
+    This is more realistic for production (always retrain on all historical data)
+    and helps with non-stationary series like stock prices.
+
+    Fold layout:
+        Fold 0: |-- train (initial) --|-- emb --|-- val --|-- emb --|-- test --|
+        Fold 1: |-- train (expanded) --------|-- emb --|-- val --|-- emb --|-- test --|
+        Fold 2: |-- train (expanded more) --------------|-- emb --|-- val --|-- emb --|-- test --|
+
+    If test_days is None, no test set is created.
+
+    Args:
+        meta: DataFrame with Date and Ticker columns
+        X: Feature array (n_samples, seq_len, n_features)
+        y: Target array (n_samples,)
+        initial_train_days: Initial training window size in trading days
+        val_days: Validation window size in trading days
+        test_days: Test window size (None to disable)
+        seq_len: Sequence length for purging/embargo
+        step_days: Step size to move val/test forward each fold
+
+    Returns:
+        List of (train_ds, val_ds, test_ds_or_None)
+    """
+
+    if len(meta) != len(X) or len(X) != len(y):
+        raise ValueError("meta, X, and y must have the same length")
+
+    meta = meta.copy()
+    meta["Date"] = pd.to_datetime(meta["Date"])
+
+    # Sort chronologically (CRITICAL)
+    order = np.argsort(meta["Date"].values)
+    X = X[order]
+    y = y[order]
+    meta = meta.iloc[order].reset_index(drop=True)
+
+    # Use unique trading dates as the unit
+    unique_dates = meta["Date"].dt.normalize().drop_duplicates().sort_values().reset_index(drop=True)
+    D = len(unique_dates)
+
+    folds = []
+    fold_id = 0
+    date_start_idx = 0  # Training always starts at beginning
+
+    while True:
+        # Compute training window (EXPANDING)
+        train_end_idx = initial_train_days + fold_id * step_days - 1
+        
+        val_start_idx = train_end_idx + seq_len
+        val_end_idx = val_start_idx + val_days - 1
+
+        if test_days is not None:
+            test_start_idx = val_end_idx + seq_len
+            test_end_idx = test_start_idx + test_days - 1
+        else:
+            test_start_idx = test_end_idx = None
+
+        # Stop if validation window goes beyond available dates
+        if val_end_idx >= D:
+            break
+        if test_days is not None and test_end_idx >= D:
+            break
+
+        # Map date ranges back to sample indices
+        train_dates = unique_dates[date_start_idx : train_end_idx + 1]
+        val_dates = unique_dates[val_start_idx : val_end_idx + 1]
+        test_dates = (
+            unique_dates[test_start_idx : test_end_idx + 1]
+            if test_days is not None
+            else pd.Index([])
+        )
+
+        train_mask = meta["Date"].dt.normalize().isin(train_dates)
+        val_mask = meta["Date"].dt.normalize().isin(val_dates)
+        test_mask = meta["Date"].dt.normalize().isin(test_dates) if test_days is not None else None
+
+        if train_mask.sum() == 0 or val_mask.sum() == 0:
+            fold_id += 1
+            continue
+
+        train_ds = TimeSeriesDataset(
+            X[train_mask.values],
+            y[train_mask.values],
+            meta=meta.loc[train_mask.values].reset_index(drop=True),
+        )
+
+        val_ds = TimeSeriesDataset(
+            X[val_mask.values],
+            y[val_mask.values],
+            meta=meta.loc[val_mask.values].reset_index(drop=True),
+        )
+
+        if test_days is not None:
+            test_ds = TimeSeriesDataset(
+                X[test_mask.values],
+                y[test_mask.values],
+                meta=meta.loc[test_mask.values].reset_index(drop=True),
+            )
+        else:
+            test_ds = None
+
+        folds.append((train_ds, val_ds, test_ds))
+
+        msg = (
+            f"Fold {fold_id}: "
+            f"Train [{train_ds.meta['Date'].min().date()} -> {train_ds.meta['Date'].max().date()}] ({len(train_dates)} days), "
+            f"Val [{val_ds.meta['Date'].min().date()} -> {val_ds.meta['Date'].max().date()}]"
+        )
+
+        if test_ds is not None:
+            msg += (
+                f", Test [{test_ds.meta['Date'].min().date()} -> "
+                f"{test_ds.meta['Date'].max().date()}]"
+            )
+
+        print(msg)
+
+        fold_id += 1
+
+    if not folds:
+        raise ValueError("No expanding folds could be created with the given parameters")
 
     return folds
 
