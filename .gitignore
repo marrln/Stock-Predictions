@@ -10,6 +10,7 @@ data_stats/sp500.csv
 data_cache/
 archive/
 backup/
+results/
 
 .github/
 .vscode/
