@@ -162,7 +162,7 @@ def combine_data(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Combine price with cumulative sentiment (V3)")
+    parser = argparse.ArgumentParser(description="Combine price with cumulative sentiment")
     
     parser.add_argument('--sentiment-csv', default=DAILY_SENTIMENT_CSV_V2)
     parser.add_argument('--full-history-dir', default=FULL_HISTORY_DIR)
@@ -177,7 +177,7 @@ def main():
     args = parser.parse_args()
     
     print("\n" + "="*60)
-    print("TF 1: Combine Data V3 (with Cumulative Sentiment)")
+    print("TF 1: Combine Data (with Cumulative Sentiment)")
     print("="*60)
     
     # Determine tickers

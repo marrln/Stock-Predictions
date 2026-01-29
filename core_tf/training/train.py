@@ -8,7 +8,7 @@ from typing import List, Dict
 
 from .metrics import (
     evaluate_price_predictions, 
-    evaluate_direction_predictions, 
+    evaluate_direction_predictions,
     direction_baseline_majority,
 )
 from core_tf.data import PreprocessingConfig, prepare_data
@@ -139,8 +139,10 @@ def train_and_evaluate(
         results['Baseline_Accuracy'] = baseline_acc
         results['vs_Baseline'] = results['Accuracy'] - baseline_acc
         
-    else:  # price or return
+    else:
+        # Price task
         results = evaluate_price_predictions(y_test, y_pred, y_base_test, X_test)
+
     
     results['epochs_trained'] = len(history.history['loss'])
     

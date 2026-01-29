@@ -1,5 +1,6 @@
-
-'''Module for evaluating stock price and direction prediction models.'''
+"""
+Module for evaluating stock price and direction prediction models.
+"""
 import numpy as np
 from typing import Tuple, Dict
 
@@ -8,7 +9,7 @@ from typing import Tuple, Dict
 # =============================================================================
 
 def denormalize_predictions(y_normalized: np.ndarray, y_base: np.ndarray) -> np.ndarray:
-    """Convert normalized predictions back to actual prices."""
+    """Convert normalized PRICE predictions back to actual prices."""
     return (y_normalized + 1) * y_base
 
 
@@ -17,7 +18,9 @@ def calculate_direction_from_prices(
     y_true: np.ndarray,
     X: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Calculate predicted and actual directions from price predictions.
+    """Calculate predicted and actual directions from PRICE predictions.
+    
+    For PRICE task: compares predicted/actual price with last known price.
     
     Returns
     -------
@@ -90,10 +93,13 @@ def evaluate_price_predictions(
     y_base: np.ndarray,
     X: np.ndarray
 ) -> Dict[str, float]:
-    """Comprehensive evaluation for price predictions."""
+    """Comprehensive evaluation for PRICE predictions.
+    
+    For PRICE task where y = (target_price / base_price) - 1
+    """
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
     
-    # Denormalize
+    # Denormalize to actual prices
     y_true_actual = denormalize_predictions(y_true, y_base)
     y_pred_actual = denormalize_predictions(y_pred, y_base)
     
@@ -127,7 +133,7 @@ def evaluate_direction_predictions(
     y_pred_proba: np.ndarray,
     threshold: float = 0.5
 ) -> Dict[str, float]:
-    """Comprehensive evaluation for direction predictions."""
+    """Comprehensive evaluation for DIRECTION predictions."""
     from sklearn.metrics import (
         accuracy_score, precision_score, recall_score, 
         f1_score, roc_auc_score, confusion_matrix
@@ -154,7 +160,7 @@ def evaluate_direction_predictions(
         'F1': f1,
         'AUC': auc,
         'Confusion_Matrix': cm,
-        'vs_Random': accuracy - 50.0  # Improvement over random
+        'vs_Random': accuracy - 50.0 # Positive = better than random
     }
 
 
@@ -170,10 +176,10 @@ def print_evaluation_results(results: Dict, task: str = 'price'):
             print(f"  TN={value[0,0]}, FP={value[0,1]}")
             print(f"  FN={value[1,0]}, TP={value[1,1]}")
         elif isinstance(value, float):
-            if 'Accuracy' in key or 'MAPE' in key or key.endswith('_Accuracy'):
+            if 'Accuracy' in key or 'MAPE' in key or key.endswith('_Accuracy') or '_pct' in key:
                 print(f"  {key}: {value:.2f}%")
             else:
-                print(f"  {key}: {value:.4f}")
+                print(f"  {key}: {value:.6f}")
         else:
             print(f"  {key}: {value}")
     

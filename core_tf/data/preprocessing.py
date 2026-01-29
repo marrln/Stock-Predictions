@@ -5,6 +5,7 @@ Preprocessing - Complete Feature Set
 Supports:
 A) Direction Prediction (binary classification)
 B) Multi-horizon prediction (1, 5, 10 days ahead)
+C) Price Prediction (regression)
 
 """
 
@@ -20,7 +21,6 @@ class PredictionTask(Enum):
     """Type of prediction task."""
     PRICE = "price"           # Predict normalized price (regression)
     DIRECTION = "direction"   # Predict up/down (binary classification)
-    RETURN = "return"         # Predict return magnitude (regression)
 
 
 @dataclass
@@ -111,7 +111,6 @@ def create_sequences(
         Targets:
         - PRICE: normalized price at horizon
         - DIRECTION: 0 (down) or 1 (up)
-        - RETURN: percentage return
     y_base : np.ndarray
         Base values for denormalization.
     metadata : dict
@@ -179,17 +178,14 @@ def create_sequences(
         if config.task == PredictionTask.PRICE:
             # Normalized price relative to window start
             y_value = (target_price / base_value) - 1
-            
-        elif config.task == PredictionTask.DIRECTION:
+        else: 
+            # PredictionTask.DIRECTION
             # Binary: 1 if price went up, 0 if down
             price_change = (target_price - last_price) / last_price
             if abs(price_change) < config.direction_threshold:
                 continue  # Skip if change is below threshold
             y_value = 1 if price_change > 0 else 0
             
-        elif config.task == PredictionTask.RETURN:
-            # Percentage return
-            y_value = (target_price - last_price) / last_price
         
         # X: all timesteps except last (or use full window)
         X_window = window_norm[:-1, :]

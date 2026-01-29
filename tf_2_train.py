@@ -28,13 +28,13 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import argparse
 
 # Import from core_tf modules
-from core_tf.data import FEATURE_SETS
 from core_tf.training import (
     ResultsSaver,
     run_single_experiment,
     run_ablation_study,
     run_multi_horizon_study,
-    run_full_experiment_suite
+    run_full_experiment_suite,
+    FEATURE_SETS
 )
 
 
@@ -45,12 +45,12 @@ def parse_args():
     )
     
     # Data
-    parser.add_argument("--data-dir", default="processed_data/csv_v3", help="Data directory")
+    parser.add_argument("--data-dir", default="processed_data/csv_v2", help="Data directory")
     parser.add_argument("--tickers", default="AAPL,MSFT,NVDA", help="Comma-separated tickers")
     # TODO: Add option to top N tickers based on data availability
     
     # Task configuration
-    parser.add_argument("--task", choices=['price', 'direction', 'return'], default='price', help="Prediction task/type")
+    parser.add_argument("--task", choices=['price', 'direction'], default='price', help="Prediction task/type")
     parser.add_argument("--horizon", type=int, default=1, help="Prediction horizon (days ahead)")
     parser.add_argument("--seq-len", type=int, default=50, help="Sequence length")
     
@@ -64,7 +64,7 @@ def parse_args():
     
     # Training
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--patience", type=int, default=15, help="Early stopping patience")
     
     # Experiments setups
@@ -122,6 +122,12 @@ def main():
     if args.save_results and saver:
         print(f"\n✓ Results saved to: {saver.experiment_dir}")
 
+
+def sweep_hyperparameters():
+    """
+    Function to sweep over different hyperparameter combinations.
+    """
+    
 
 if __name__ == "__main__":
     main()
