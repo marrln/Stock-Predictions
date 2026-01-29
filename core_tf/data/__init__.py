@@ -1,9 +1,7 @@
 from .preprocessing import (
     PredictionTask,
     PreprocessingConfig,
-    FEATURE_SETS,
     # Data preprocessing functions
-    get_feature_set,
     normalize_window_relative,
     create_sequences,
     prepare_data,

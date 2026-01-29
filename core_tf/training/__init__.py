@@ -12,7 +12,9 @@ from .experiment_setups import (
     run_single_experiment,
     run_ablation_study,
     run_multi_horizon_study,
-    run_full_experiment_suite
+    run_full_experiment_suite,
+    FEATURE_SETS,
+    get_feature_set
 )
 
 from .metrics import (
