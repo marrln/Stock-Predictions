@@ -1,13 +1,12 @@
-"""Model loading."""
-from .Model import (
-    LSTMConfig, 
+from .lstm import (
+    ModelConfig,
     build_lstm_model,
-    LSTMFinancialModel, 
-    get_lstm_config
+    FinancialModel,
+    get_config_preset
 )
 __all__ = {
-    "LSTMConfig",
     "build_lstm_model",
-    "LSTMFinancialModel",
-    "get_lstm_config",
+    "ModelConfig",
+    "FinancialModel",
+    "get_config_preset",    
 }
